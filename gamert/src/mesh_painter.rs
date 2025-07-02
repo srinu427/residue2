@@ -1,0 +1,691 @@
+use std::{collections::HashMap, mem::offset_of, sync::Arc};
+
+use ash::vk;
+use glam::Vec4Swizzles;
+use include_bytes_aligned::include_bytes_aligned;
+use painter::{
+    ash, slotmap::{new_key_type, SlotMap}, Allocator, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, Painter, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputType, SingePassRenderPipeline
+};
+
+static VERTEX_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.vert.spv");
+static FRAGMENT_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.frag.spv");
+
+static MAX_TEXTURES: usize = 100;
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct CamData {
+    pub pos: glam::Vec4,
+    pub look_at: glam::Vec4,
+    pub view_proj: glam::Mat4,
+}
+
+impl CamData {
+    pub fn new(pos: glam::Vec4, look_at: glam::Vec4) -> Self {
+        let view = glam::Mat4::look_at_rh(pos.xyz(), look_at.xyz(), glam::Vec3::new(0.0, 1.0, 0.0));
+        let proj = glam::Mat4::perspective_rh(
+            90.0f32.to_radians(),
+            1.0,
+            0.1,
+            100.0,
+        );
+        let view_proj = proj * view;
+        Self {
+            pos,
+            look_at,
+            view_proj,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct SceneDescriptorData {
+    cam_data: CamData,
+}
+
+impl SceneDescriptorData {
+    pub fn create_descriptor_set_layout(
+        painter: Arc<Painter>,
+    ) -> Result<ShaderInputLayout, String> {
+        ShaderInputLayout::new(painter, &[ShaderInputBindingInfo{ _type: ShaderInputType::StorageBuffer, count: 1 }])
+            .map_err(|e| format!("at create descriptor set layout: {e}"))
+    }
+}
+
+pub struct PerFrameData {
+    resolution: vk::Extent2D,
+    scene_descriptor_set: vk::DescriptorSet,
+    texture_descriptor_set: vk::DescriptorSet,
+    next_draw_params: Vec<ObjDrawParams>,
+    vertex_buffer: vk::Buffer,
+    index_buffer: vk::Buffer,
+    index_buffer_size: u32,
+    scene_buffer: vk::Buffer,
+    color_image: Image2d,
+    color_image_view: vk::ImageView,
+    depth_image: Image2d,
+    depth_image_view: vk::ImageView,
+}
+
+impl PerFrameData {
+    pub fn new(
+        painter: Arc<Painter>,
+        allocator: &mut Allocator,
+        color_format: vk::Format,
+        depth_format: vk::Format,
+        extent: vk::Extent2D,
+        scene_set_layout: &ShaderInputLayout,
+        texture_set_layout: &ShaderInputLayout,
+        descriptor_pool: vk::DescriptorPool,
+        command_buffer: &CommandBuffer,
+    ) -> Result<Self, String> {
+        unsafe {
+            let scene_descriptor_set = painter
+                .device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(descriptor_pool)
+                        .set_layouts(&[scene_set_layout.descriptor_set_layout]),
+                )
+                .map_err(|e| format!("at allocate scene descriptor set: {e}"))?
+                .pop()
+                .ok_or("no scene descriptor set created")?;
+            let texture_descriptor_set = painter
+                .device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(descriptor_pool)
+                        .set_layouts(&[texture_set_layout.descriptor_set_layout]),
+                )
+                .map_err(|e| format!("at allocate texture descriptor set: {e}"))?
+                .pop()
+                .ok_or("no texture descriptor set created")?;
+            let vertex_buffer = allocator
+                .create_buffer(
+                    32 * 1024 * 1024,
+                    vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                    false,
+                )
+                .map_err(|e| format!("at create vertex buffer: {e}"))?;
+            let index_buffer = allocator
+                .create_buffer(
+                    4 * 1024 * 1024,
+                    vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                    false,
+                )
+                .map_err(|e| format!("at create index buffer: {e}"))?;
+            let scene_buffer = allocator
+                .create_buffer(
+                    size_of::<SceneDescriptorData>() as _,
+                    vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+                    false,
+                )
+                .map_err(|e| format!("at create scene buffer: {e}"))?;
+            let mut color_image = allocator
+                .create_image_2d(
+                    color_format,
+                    extent,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                    true,
+                )
+                .map_err(|e| format!("at create color image: {e}"))?;
+            let color_image_view = color_image.create_image_view().map_err(|e| format!("at create color image view: {e}"))?;
+            let mut depth_image = allocator
+                .create_image_2d(
+                    depth_format,
+                    extent,
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                    true,
+                )
+                .map_err(|e| format!("at create depth image: {e}"))?;
+            let depth_image_view = depth_image.create_image_view().map_err(|e| format!("at create depth image view: {e}"))?;
+
+            command_buffer.begin(true).map_err(|e| format!("at begin command buffer: {e}"))?;
+
+            let color_image_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .image(color_image.image)
+                .subresource_range(color_image.get_subresource_range());
+            
+            let depth_image_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .image(depth_image.image)
+                .subresource_range(depth_image.get_subresource_range());
+            
+            painter.device.cmd_pipeline_barrier(
+                command_buffer.command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[color_image_barrier],
+            );
+            painter.device.cmd_pipeline_barrier(
+                command_buffer.command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[depth_image_barrier]
+            );
+
+            command_buffer.end().map_err(|e| format!("at end command buffer: {e}"))?;
+
+            let fence = CpuFuture::new(painter.clone(), false).map_err(|e| format!("at create fence: {e}"))?;
+            command_buffer.submit(&[], &[], &[], Some(&fence)).map_err(|e| format!("at submit command buffer: {e}"))?;
+            fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
+            command_buffer.reset().map_err(|e| format!("at reset command buffer: {e}"))?;
+
+            Ok(Self {
+                resolution: extent,
+                scene_descriptor_set,
+                texture_descriptor_set,
+                next_draw_params: vec![],
+                vertex_buffer,
+                index_buffer,
+                scene_buffer,
+                index_buffer_size: 0,
+                color_image,
+                color_image_view,
+                depth_image,
+                depth_image_view,
+            })
+        }
+    }
+
+    pub fn cleanup(&self, device: &ash::Device, allocator: &mut Allocator) {
+        unsafe {
+            device.destroy_buffer(self.index_buffer, None);
+            device.destroy_buffer(self.vertex_buffer, None);
+            let _ = allocator.delete_allocations(
+                &[self.vertex_buffer, self.index_buffer],
+                &[&self.color_image, &self.depth_image],
+            )
+                .inspect_err(|e| eprintln!("at delete allocations: {e}"));
+        }
+    }
+}
+
+pub struct Texture {
+    image: Image2d,
+    image_view: vk::ImageView,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextureDescriptorData {
+    samplers: [vk::Sampler; 1],
+    texture_image_views: Vec<vk::ImageView>,
+}
+
+impl TextureDescriptorData {
+    pub fn create_descriptor_set_layout(
+        painter: Arc<Painter>,
+    ) -> Result<ShaderInputLayout, String> {
+        ShaderInputLayout::new(
+            painter,
+            &[ShaderInputBindingInfo{ _type: ShaderInputType::Sampler, count: 1 },
+            ShaderInputBindingInfo{ _type: ShaderInputType::SampledImage2d, count: MAX_TEXTURES as _ }]
+        )
+            .map_err(|e| format!("at create descriptor set layout: {e}"))
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SamplingMode {
+    X1 = 0,
+    X4 = 1,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DrawableMeshAndTexture {
+    pub mesh_name: MeshID,
+    pub texture_name: TextureID,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GpuObjectInfo {
+    pub obj_id: u32,
+    pub mesh_id: u32,
+    pub texture_id: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjDrawParams {
+    pub vert_offset: i32,
+    pub idx_offset: u32,
+    pub idx_count: u32,
+    pub obj_info: GpuObjectInfo
+}
+
+#[derive(Debug, Clone)]
+pub struct Vertex {
+    pub position: glam::Vec4,
+    pub normal: glam::Vec4,
+    // tangent: glam::Vec4,
+    // bitangent: glam::Vec4,
+    pub tex_coords: glam::Vec4,
+}
+
+impl Vertex {
+    fn get_binding_description() -> Vec<vk::VertexInputBindingDescription> {
+        vec![vk::VertexInputBindingDescription::default()
+            .stride(size_of::<Self>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)]
+    }
+
+    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
+        vec![
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .offset(offset_of!(Self, position) as u32)
+                .format(vk::Format::R32G32B32A32_SFLOAT),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .offset(offset_of!(Self, normal) as u32)
+                .format(vk::Format::R32G32B32A32_SFLOAT),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .offset(offset_of!(Self, tex_coords) as u32)
+                .format(vk::Format::R32G32B32A32_SFLOAT),
+        ]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
+}
+
+new_key_type! {
+    pub struct MeshID;
+}
+
+new_key_type! {
+    pub struct TextureID;
+}
+
+pub struct MeshPainter {
+    painter: Arc<Painter>,
+    pipeline: SingePassRenderPipeline,
+    color_attachment_format: vk::Format,
+    depth_attachment_format: vk::Format,
+    sampler: vk::Sampler,
+    allocator: Allocator,
+    meshes: SlotMap<MeshID, Mesh>,
+    textures: SlotMap<TextureID, Texture>,
+    textures_to_delete: Vec<Texture>,
+    descriptor_pool: vk::DescriptorPool,
+    command_pool: CommandPool,
+    command_buffer: CommandBuffer,
+    per_frame_datas: Vec<PerFrameData>,
+}
+
+impl MeshPainter {
+    fn select_depth_format(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> Result<vk::Format, String> {
+        let preferred_depth_formats = [
+            vk::Format::D24_UNORM_S8_UINT,
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+        ];
+        for &format in &preferred_depth_formats {
+            let properties =
+                unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+            if properties
+                .optimal_tiling_features
+                .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+            {
+                return Ok(format);
+            }
+        }
+        return Err("No suitable depth format found".to_string());
+    }
+
+    pub fn new(painter: Arc<Painter>, resolution: vk::Extent2D, frame_count: usize) -> Result<Self, String> {
+        unsafe {
+            let device = &painter.device;
+
+            let color_attachment_format = vk::Format::R8G8B8A8_UNORM;
+            let depth_attachment_format =
+                Self::select_depth_format(&painter.instance, painter.physical_device)
+                    .map_err(|e| format!("at select depth format: {e}"))?;
+
+            let sampler = device
+                .create_sampler(&vk::SamplerCreateInfo::default(), None)
+                .map_err(|e| format!("at create sampler: {e}"))?;
+
+            let pipeline = SingePassRenderPipeline::new(
+                painter.clone(),
+                vec![(color_attachment_format, vk::AttachmentLoadOp::CLEAR, vk::AttachmentStoreOp::STORE)],
+                Some((depth_attachment_format, vk::AttachmentLoadOp::CLEAR, vk::AttachmentStoreOp::DONT_CARE)),
+                vec![
+                    vec![ShaderInputBindingInfo{ _type: ShaderInputType::StorageBuffer, count: 1 }],
+                    vec![
+                        ShaderInputBindingInfo{ _type: ShaderInputType::Sampler, count: 1 },
+                        ShaderInputBindingInfo{ _type: ShaderInputType::SampledImage2d, count: MAX_TEXTURES as _ },
+                    ],
+                ],
+                size_of::<GpuObjectInfo>(),
+                VERTEX_SHADER_CODE,
+                FRAGMENT_SHADER_CODE,
+                Vertex::get_binding_description(),
+                Vertex::get_attribute_descriptions(),
+            )
+                .map_err(|e| format!("at create render pipeline: {e}"))?;
+
+            let descriptor_pool = painter
+                .device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .flags(
+                            vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET
+                                | vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
+                        )
+                        .pool_sizes(&[
+                            vk::DescriptorPoolSize::default()
+                                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                                .descriptor_count(2 * frame_count as u32),
+                            vk::DescriptorPoolSize::default()
+                                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                                .descriptor_count(2 * frame_count as u32),
+                            vk::DescriptorPoolSize::default()
+                                .ty(vk::DescriptorType::SAMPLED_IMAGE)
+                                .descriptor_count((MAX_TEXTURES * frame_count) as _),
+                            vk::DescriptorPoolSize::default()
+                                .ty(vk::DescriptorType::SAMPLER)
+                                .descriptor_count(2 * frame_count as u32),
+                        ])
+                        .max_sets(2 * frame_count as u32),
+                    None,
+                )
+                .map_err(|e| format!("at create descriptor pool: {e}"))?;
+
+            let mut allocator =
+                Allocator::new(painter.clone()).map_err(|e| format!("at create allocator: {e}"))?;
+
+            let command_pool = CommandPool::new(painter.clone()).map_err(|e| format!("at create command pool: {e}"))?;
+
+            let command_buffer = command_pool.allocate_command_buffers(1).map_err(|e| format!("at allocate command buffer: {e}"))?.swap_remove(0);
+
+            let per_frame_datas = (0..frame_count)
+                .map(|_| {
+                    PerFrameData::new(
+                        painter.clone(),
+                        &mut allocator,
+                        color_attachment_format,
+                        depth_attachment_format,
+                        resolution,
+                        &scene_descriptor_layout,
+                        &texture_descriptor_layout,
+                        descriptor_pool,
+                        &command_buffer,
+                    )
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            Ok(Self {
+                painter,
+                pipeline,
+                color_attachment_format,
+                depth_attachment_format,
+                meshes: SlotMap::with_key(),
+                textures: SlotMap::with_key(),
+                textures_to_delete: Vec::new(),
+                descriptor_pool,
+                command_pool,
+                command_buffer,
+                per_frame_datas,
+                sampler,
+                allocator,
+            })
+        }
+    }
+
+    pub fn get_rendered_image(&self, frame_number: usize) -> &Image2d {
+        &self.per_frame_datas[frame_number % self.per_frame_datas.len()].color_image
+    }
+
+    pub fn add_mesh(&mut self, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshID {
+        let mesh_id = self.meshes.insert(Mesh { vertices, indices });
+        mesh_id
+    }
+
+    pub fn add_texture(&mut self, path: &str) -> Result<TextureID, String> {
+        let image = image::open(path).map_err(|e| format!("at open image: {e}"))?;
+        let image_data = image.to_rgba8();
+        let vk_image = self.allocator.create_image_2d(
+            vk::Format::R8G8B8A8_UNORM,
+            vk::Extent2D { width: image.width(), height: image.height() },
+            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+            true
+        )
+            .map_err(|e| format!("at vk create image: {e}"))?;
+        let stage_buffer = self.allocator
+            .create_buffer(
+                image_data.len() as u64,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                false,
+            )
+            .map_err(|e| format!("at create stage buffer: {e}"))?;
+        self.allocator.write_to_buffer_mem(stage_buffer, &image_data)
+            .map_err(|e| format!("at write to staging buffer mem: {e}"))?;
+
+        unsafe {
+            let device = &self.painter.device;
+            let command_buffer = &self.command_buffer;
+            command_buffer.begin(true).map_err(|e| format!("at begin command buffer: {e}"))?;
+            device.cmd_pipeline_barrier(
+                command_buffer.command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .image(vk_image.image)
+                    .subresource_range(vk_image.get_subresource_range())],
+            );
+            device.cmd_copy_buffer_to_image(
+                command_buffer.command_buffer,
+                stage_buffer,
+                vk_image.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::BufferImageCopy::default()
+                    .image_subresource(vk_image.get_subresource())
+                    .image_extent(vk_image.extent3d())],
+            );
+            device.cmd_pipeline_barrier(
+                command_buffer.command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::BY_REGION,
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(vk_image.image)
+                    .subresource_range(vk_image.get_subresource_range())],
+            );
+            command_buffer.end().map_err(|e| format!("at end command buffer: {e}"))?;
+
+            let fence = CpuFuture::new(self.painter.clone(), false).map_err(|e| format!("at create upload texture fence: {e}"))?;
+            command_buffer.submit(&[], &[], &[], Some(&fence))
+                .map_err(|e| format!("at submit command buffer: {e}"))?;
+            fence.wait().map_err(|e| format!("at texture upload fence wait: {e}"))?;
+        }
+
+        let image_view = unsafe {
+            self.painter.device
+                .create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(vk_image.image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(vk::Format::R8G8B8A8_UNORM)
+                        .subresource_range(vk_image.get_subresource_range()),
+                    None,
+                )
+                .map_err(|e| format!("at create image view: {e}"))?
+        };
+        let texture_id = self.textures.insert(Texture { image: vk_image, image_view });
+        Ok(texture_id)
+    }
+
+    pub fn update_inputs(&mut self, frame_number: usize, drawables: &[DrawableMeshAndTexture], camera: CamData) -> Result<(), String> {
+        let mut vb_data = vec![];
+        let mut ib_data = vec![];
+
+        let mut vb_offset = 0i32;
+        let mut ib_offset = 0;
+        let mut mesh_id = 0;
+
+        let textures_array = self.textures.iter().collect::<Vec<_>>();
+
+        let texture_idx_map = textures_array.iter().enumerate().map(|(tid, tex)| (tex.0, tid)).collect::<HashMap<_, _>>();
+
+        let mut objects = vec![];
+
+        for drawable in drawables {
+            let Some(mesh) = self.meshes.get(drawable.mesh_name) else {
+                continue
+            };
+            let Some(&texture_idx) = texture_idx_map.get(&drawable.texture_name) else {
+                continue
+            };
+            vb_data.extend_from_slice(&mesh.vertices);
+            ib_data.extend_from_slice(&mesh.indices.iter().map(|i| i + vb_offset as u32).collect::<Vec<_>>());
+            
+            let object = GpuObjectInfo {
+                obj_id: objects.len() as u32,
+                mesh_id,
+                texture_id: texture_idx as u32,
+            };
+            mesh_id += 1;
+            objects.push(ObjDrawParams {
+                vert_offset: vb_offset,
+                idx_offset: ib_offset,
+                idx_count: mesh.indices.len() as u32,
+                obj_info: object,
+            });
+            vb_offset += mesh.vertices.len() as i32;
+            ib_offset += mesh.indices.len() as u32;
+        }
+
+        let norm_frame_number = frame_number % self.per_frame_datas.len();
+        let vb = self.per_frame_datas[norm_frame_number].vertex_buffer;
+        let ib = self.per_frame_datas[norm_frame_number].index_buffer;
+        let sb = self.per_frame_datas[norm_frame_number].scene_buffer;
+        self.per_frame_datas[norm_frame_number].index_buffer_size = ib_data.len() as u32;
+        self.per_frame_datas[norm_frame_number].next_draw_params = objects;
+
+        unsafe {
+            let scene_data = SceneDescriptorData {
+                cam_data: camera,
+            };
+            self.allocator.write_to_buffer_mem(sb, &[scene_data].align_to::<u8>().1)
+                .map_err(|e| format!("at write to scene buffer mem: {e}"))?;
+            self.allocator.write_to_buffer_mem(vb, vb_data.as_slice().align_to::<u8>().1)
+                .map_err(|e| format!("at write to vertex buffer mem: {e}"))?;
+            self.allocator.write_to_buffer_mem(ib, ib_data.as_slice().align_to::<u8>().1)
+                .map_err(|e| format!("at write to index buffer mem: {e}"))?;
+
+            let scene_dset = self.per_frame_datas[norm_frame_number].scene_descriptor_set;
+            let texture_dset = self.per_frame_datas[norm_frame_number].texture_descriptor_set;
+            
+            self.painter.device.update_descriptor_sets(
+                &[
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(scene_dset)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .descriptor_count(1)
+                        .buffer_info(&[vk::DescriptorBufferInfo::default().buffer(sb).range(vk::WHOLE_SIZE)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(texture_dset)
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .descriptor_count(1)
+                        .image_info(&[vk::DescriptorImageInfo::default()
+                            .sampler(self.sampler)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(texture_dset)
+                        .dst_binding(1)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .descriptor_count(textures_array.len() as _)
+                        .image_info(&textures_array.iter().map(|(_, tex)| {
+                            vk::DescriptorImageInfo::default()
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .image_view(tex.image_view)
+                        }).collect::<Vec<_>>()),
+                ],
+                &[]
+            );
+            // println!("number of textures written: {}", textures_array.len());
+        }
+        
+        Ok(())
+    }
+
+    pub fn draw_meshes(
+        &self,
+        command_buffer: &CommandBuffer,
+        frame_number: usize,
+    ) -> Result<(), String> {
+        let frame_number = frame_number % self.per_frame_datas.len();
+        let per_frame_data = &self.per_frame_datas[frame_number];
+        let mut render_cmds = vec![];
+        render_cmds.push(GpuRenderPassCommand::BindPipeline { pipeline: 0 });
+        render_cmds.push(GpuRenderPassCommand::BindVertexBuffers { buffers: vec![per_frame_data.vertex_buffer] });
+        render_cmds.push(GpuRenderPassCommand::BindIndexBuffer { buffer: per_frame_data.index_buffer });
+        render_cmds.push(GpuRenderPassCommand::BindShaderInput { pipeline_layout: 0, descriptor_sets: vec![per_frame_data.scene_descriptor_set, per_frame_data.texture_descriptor_set] });
+        for draw_param in &per_frame_data.next_draw_params {
+            unsafe {
+                render_cmds.push(GpuRenderPassCommand::SetPushConstant { pipeline_layout: 0, data: [draw_param.obj_info].align_to::<u8>().1.to_vec() });
+            }
+            render_cmds.push(GpuRenderPassCommand::Draw { count: draw_param.idx_count, vertex_offset: draw_param.vert_offset, index_offset: draw_param.idx_offset });
+        }
+        let gpu_command = GpuCommand::RunRenderPass {
+            render_pass: self.pipeline.render_pass,
+            framebuffer: (),
+            extent: (),
+            clear_values: (),
+            pipelines: vec![self.pipeline.pipeline],
+            pipeline_layouts: vec![self.pipeline.pipeline_layout],
+            commands: render_cmds,
+        };
+        Ok(())
+    }
+}
+
+impl Drop for MeshPainter {
+    fn drop(&mut self) {
+        unsafe {
+            let device = &self.painter.device;
+            self.textures_to_delete.clear();
+            self.textures.clear();
+            for per_frame_data in self.per_frame_datas.drain(..) {
+                per_frame_data.cleanup(device, &mut self.allocator);
+            }
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
+        }
+    }
+}

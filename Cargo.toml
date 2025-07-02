@@ -1,0 +1,7 @@
+[package]
+name = "residue2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gamert = { path = "gamert" }

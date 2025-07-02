@@ -1,0 +1,12 @@
+[package]
+name = "gamert"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+glam = "0.30.3"
+image = "0.25.6"
+include_bytes_aligned = "0.1.4"
+painter = { path = "painter" }
+
