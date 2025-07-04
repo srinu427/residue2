@@ -72,7 +72,7 @@ impl Sheets {
                 .image_usage(
                     vk::ImageUsageFlags::COLOR_ATTACHMENT
                         | vk::ImageUsageFlags::TRANSFER_DST
-                        | vk::ImageUsageFlags::STORAGE,
+                        // | vk::ImageUsageFlags::STORAGE,
                 )
                 .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .pre_transform(surface_caps.current_transform)
@@ -88,8 +88,19 @@ impl Sheets {
                 .get_swapchain_images(swapchain)
                 .map_err(|e| format!("at swapchain images: {e}"))?
                 .into_iter()
-                .map(|image| Image2d { image, format: surface_format.format, extent: surface_resolution, is_swapchain_image: true, painter: painter.clone(), image_views: vec![] })
-                .collect::<Vec<_>>();
+                .map(|image| {
+                    let image_view = Image2d::create_image_view(&painter, image, surface_format.format)
+                        .map_err(|e| format!("at image view creation: {e}"))?;
+                    Ok(Image2d {
+                        image,
+                        format: surface_format.format,
+                        extent: surface_resolution,
+                        is_swapchain_image: true,
+                        painter: painter.clone(),
+                        image_view
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
 
             command_buffer.begin(true).map_err(|e| format!("at command buffer begin: {e}"))?;
 
@@ -106,13 +117,7 @@ impl Sheets {
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
                     .image(image.image)
-                    .subresource_range(vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .base_mip_level(0)
-                        .level_count(1)
-                        .base_array_layer(0)
-                        .layer_count(1)
-                    )
+                    .subresource_range(image.get_subresource_range())
                 ).collect::<Vec<_>>(),
             );
             command_buffer.end().map_err(|e| format!("at command buffer end: {e}"))?;
@@ -179,8 +184,19 @@ impl Sheets {
                 .get_swapchain_images(new_swapchain)
                 .map_err(|e| format!("at fetching swapchain images: {e}"))?
                 .into_iter()
-                .map(|image| Image2d { image_views: vec![], image, format: self.surface_format.format, extent: new_resolution, is_swapchain_image: true, painter: self.painter.clone() })
-                .collect::<Vec<_>>();
+                .map(|image| {
+                    let image_view = Image2d::create_image_view(&self.painter, image, self.surface_format.format)
+                        .map_err(|e| format!("at image view creation: {e}"))?;
+                    Ok(Image2d {
+                        image_view,
+                        image,
+                        format: self.surface_format.format,
+                        extent: new_resolution,
+                        is_swapchain_image: true,
+                        painter: self.painter.clone()
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
 
             self.swapchain = new_swapchain;
             self.swapchain_images = new_swapchain_images;

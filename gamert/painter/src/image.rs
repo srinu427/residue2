@@ -105,7 +105,7 @@ impl ImageAccess {
 }
 
 pub struct Image2d{
-    pub image_views: Vec<vk::ImageView>,
+    pub image_view: vk::ImageView,
     pub image: vk::Image,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
@@ -114,41 +114,29 @@ pub struct Image2d{
 }
 
 impl Image2d {
-    pub fn create_image_view(&mut self) -> Result<vk::ImageView, String> {
-        unsafe {
-            let image_view = self
-                .painter
-                .device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(self.image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(self.format)
-                        .components(vk::ComponentMapping::default())
-                        .subresource_range(self.get_subresource_range()),
-                    None,
-                )
-                .map_err(|e| format!("at image view creation: {e}"))?;
-            self.image_views.push(image_view);
-            Ok(image_view)
-        }
-    }
-
-    pub fn get_subresource(&self) -> vk::ImageSubresourceLayers {
+    pub(crate) fn make_subresource(format: vk::Format) -> vk::ImageSubresourceLayers {
         vk::ImageSubresourceLayers::default()
-            .aspect_mask(get_image_aspect(self.format))
+            .aspect_mask(get_image_aspect(format))
             .mip_level(0)
             .base_array_layer(0)
             .layer_count(1)
     }
 
     pub fn get_subresource_range(&self) -> vk::ImageSubresourceRange {
+        Self::make_subresource_range(self.format)
+    }
+
+    pub(crate) fn make_subresource_range(format: vk::Format) -> vk::ImageSubresourceRange {
         vk::ImageSubresourceRange::default()
-            .aspect_mask(get_image_aspect(self.format))
+            .aspect_mask(get_image_aspect(format))
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
             .layer_count(1)
+    }
+
+    pub fn get_subresource_layers(&self) -> vk::ImageSubresourceLayers {
+        Self::make_subresource(self.format)
     }
 
     pub fn get_full_size_offset(&self) -> [vk::Offset3D; 2] {
@@ -161,14 +149,26 @@ impl Image2d {
     pub fn extent3d(&self) -> vk::Extent3D {
         vk::Extent3D{width: self.extent.width, height: self.extent.height, depth: 1}
     }
+
+    pub fn create_image_view(painter: &Painter, image: vk::Image, format: vk::Format) -> Result<vk::ImageView, String> {
+        unsafe {
+            painter.device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(Self::make_subresource_range(format)),
+                None,
+            ).map_err(|e| format!("at image view creation: {e}"))
+        }
+    }
 }
 
 impl Drop for Image2d {
     fn drop(&mut self) {
         unsafe {
-            for image_view in &self.image_views {
-                self.painter.device.destroy_image_view(*image_view, None);
-            }
+            self.painter.device.destroy_image_view(self.image_view, None);
+
             if !self.is_swapchain_image {
                 self.painter.device.destroy_image(self.image, None);
             }

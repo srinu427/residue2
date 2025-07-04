@@ -181,8 +181,8 @@ impl CommandBuffer {
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                 &[
                                     vk::ImageBlit::default()
-                                        .src_subresource(src.get_subresource())
-                                        .dst_subresource(dst.get_subresource())
+                                        .src_subresource(src.get_subresource_layers())
+                                        .dst_subresource(dst.get_subresource_layers())
                                         .src_offsets(src.get_full_size_offset())
                                         .dst_offsets(dst.get_full_size_offset()),
                                 ],
@@ -236,7 +236,7 @@ impl CommandBuffer {
                                     .buffer_offset(0)
                                     .buffer_row_length(0)
                                     .buffer_image_height(0)
-                                    .image_subresource(image.get_subresource())
+                                    .image_subresource(image.get_subresource_layers())
                                     .image_offset(vk::Offset3D::default())
                                     .image_extent(image.extent3d())
                             ]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::{Painter, ShaderInputBindingInfo, ShaderInputLayout, ShaderModule};
+use crate::{Image2d, Painter, ShaderInputBindingInfo, ShaderInputLayout, ShaderModule};
 
 pub struct SingePassRenderPipeline {
     pub pipeline_layout: vk::PipelineLayout,
@@ -10,7 +10,7 @@ pub struct SingePassRenderPipeline {
     pub render_pass: vk::RenderPass,
     pub shader_input_layouts: Vec<ShaderInputLayout>,
     pub push_constant_size: usize,
-    painter: Arc<Painter>,
+    pub painter: Arc<Painter>,
 }
 
 impl SingePassRenderPipeline {
@@ -47,6 +47,13 @@ impl SingePassRenderPipeline {
                     .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                     .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
             });
+        let all_attchments = if let Some(depth_attachment) = depth_attachment.clone() {
+            let mut a = color_attachments.clone();
+            a.append(&mut vec![depth_attachment]);
+            a
+        } else {
+            color_attachments.clone()
+        };
         let subpass_color_attachments = (0..color_attachments.len())
             .map(|i| vk::AttachmentReference::default().attachment(i as _))
             .collect::<Vec<_>>();
@@ -66,7 +73,7 @@ impl SingePassRenderPipeline {
         let subpass = [subpass];
 
         let render_pass_create_info = vk::RenderPassCreateInfo::default()
-            .attachments(&color_attachments)
+            .attachments(&all_attchments)
             .subpasses(&subpass);
         let render_pass = unsafe {
             painter
@@ -159,6 +166,30 @@ impl SingePassRenderPipeline {
         };
         Ok(Self { render_pass, shader_input_layouts, push_constant_size, pipeline_layout, pipeline, painter })
     }
+
+    pub fn create_render_output(
+        &self,
+        attachments: Vec<&Image2d>,
+    ) -> Result<RenderOutput, String> {
+        unsafe {
+            let attachment_views = attachments
+                .iter()
+                .map(|image| image.image_view)
+                .collect::<Vec<_>>();
+            let framebuffer_create_info = vk::FramebufferCreateInfo::default()
+                .render_pass(self.render_pass)
+                .attachments(&attachment_views)
+                .width(attachments[0].extent.width)
+                .height(attachments[0].extent.height)
+                .layers(1);
+            let framebuffer = self
+                .painter
+                .device
+                .create_framebuffer(&framebuffer_create_info, None)
+                .map_err(|e| format!("at framebuffer creation: {e}"))?;
+            Ok(RenderOutput { render_pass: self.render_pass ,framebuffer, painter: self.painter.clone() })
+        }
+    }
 }
 
 impl Drop for SingePassRenderPipeline {
@@ -172,6 +203,20 @@ impl Drop for SingePassRenderPipeline {
                     .destroy_descriptor_set_layout(shader_input_layout.descriptor_set_layout, None);
             }
             self.painter.device.destroy_render_pass(self.render_pass, None);
+        }
+    }
+}
+
+pub struct RenderOutput {
+    render_pass: vk::RenderPass,
+    pub framebuffer: vk::Framebuffer,
+    painter: Arc<Painter>,
+}
+
+impl Drop for RenderOutput {
+    fn drop(&mut self) {
+        unsafe {
+            self.painter.device.destroy_framebuffer(self.framebuffer, None);
         }
     }
 }

@@ -131,7 +131,9 @@ impl Allocator {
                 .bind_image_memory(image, allocation.memory(), allocation.offset())
                 .map_err(|e| format!("at image memory binding: {e}"))?;
             self.image_allocations.insert(image, allocation);
-            let image2d = Image2d { image, painter: self.painter.clone(), image_views: vec![], format, extent, is_swapchain_image: false };
+            let image_view = Image2d::create_image_view(&self.painter, image, format)
+                .map_err(|e| format!("at image view creation: {e}"))?;
+            let image2d = Image2d { image, painter: self.painter.clone(), image_view, format, extent, is_swapchain_image: false };
             Ok(image2d)
         }
     }

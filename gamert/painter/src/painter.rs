@@ -60,8 +60,8 @@ pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, String> {
     #[cfg(not(target_os = "macos"))]
     let vk_instance_create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
-        .enabled_layer_names(&all_layers)
-        .enabled_extension_names(&all_extensions);
+        .enabled_layer_names(&layers)
+        .enabled_extension_names(&extensions);
 
     unsafe {
         entry

@@ -20,8 +20,8 @@ pub use allocator::Allocator;
 pub use command::{GpuRenderPassCommand, GpuCommand, CommandBuffer, CommandPool};
 pub use image::{ImageAccess, Image2d};
 pub use painter::Painter;
-pub use render_pipeline::SingePassRenderPipeline;
-pub use shader_input::{ShaderInputType, ShaderInputBindingInfo, ShaderInputLayout};
+pub use render_pipeline::{SingePassRenderPipeline, RenderOutput};
+pub use shader_input::{ShaderInputType, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputAllocator};
 pub use sheets::Sheets;
 pub use sync::{CpuFuture, GpuFuture};
 

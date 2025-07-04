@@ -3,8 +3,7 @@ use std::sync::Arc;
 use painter::winit::application::ApplicationHandler;
 use painter::winit::event::WindowEvent;
 use painter::winit::event_loop::{self, ControlFlow, EventLoop};
-use painter::{CommandBuffer, CommandPool, CpuFuture, Painter, GpuFuture, Sheets};
-use painter::ash::vk;
+use painter::{CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuFuture, ImageAccess, Painter, Sheets};
 use painter::winit::window::{Window, WindowAttributes};
 
 mod mesh_painter;
@@ -116,98 +115,44 @@ impl Canvas {
     }
 
     pub fn paint(&mut self) -> Result<(), String> {
-        // println!("painting picture");
         let frame_num = self.sheets.acquire_next_image(&self.image_available_semaphore, None)
             .expect("Failed to acquire next image");
-        let sheet_res = self.sheets.surface_resolution;
-        let command_buffer = &self.command_buffers[frame_num as usize];
         let draw_complete_semaphore = &self.draw_complete_semaphores[frame_num as usize];
         let draw_complete_fence = &self.draw_complete_fences[frame_num as usize];
         let cam_data = CamData::new(glam::vec4(0.0, 0.0, -1.0, 1.0), glam::vec4(0.0, 0.0, 0.0, 0.0));
 
-        unsafe {
-            draw_complete_fence.wait()
-                .map_err(|e| format!("at wait for fence: {e}"))?;
-            draw_complete_fence.reset()
-                .map_err(|e| format!("at reset fence: {e}"))?;
+        draw_complete_fence.wait()
+            .map_err(|e| format!("at wait for fence: {e}"))?;
+        draw_complete_fence.reset()
+            .map_err(|e| format!("at reset fence: {e}"))?;
 
-            command_buffer.reset().map_err(|e| format!("at reset command buffer: {e}"))?;
+        self.command_buffers[frame_num as usize].reset().map_err(|e| format!("at reset command buffer: {e}"))?;
 
-            self.mesh_painter.update_inputs(
-                frame_num as usize, &self.drawables,
-                cam_data
-            )
-                .map_err(|e| format!("at update vb and ib: {e}"))?;
-            
-            command_buffer.begin(false).map_err(|e| format!("at begin command buffer: {e}"))?;
-            self.mesh_painter.draw_meshes(command_buffer, frame_num as usize)
-                .map_err(|e| format!("at draw meshes: {e}"))?;
+        self.mesh_painter.update_inputs(
+            frame_num as usize, &self.drawables,
+            cam_data
+        )
+            .map_err(|e| format!("at update vb and ib: {e}"))?;
+        
+        let mesh_render_image = self.mesh_painter.get_rendered_image(frame_num as usize);
+        let sheet = &self.sheets.swapchain_images[frame_num as usize];
 
-            let mesh_render_image = self.mesh_painter.get_rendered_image(frame_num as usize);
-            let sheet = &self.sheets.swapchain_images[frame_num as usize];
+        let commands = vec![
+            GpuCommand::InitialImageAccess { image: mesh_render_image, access: ImageAccess::TransferRead },
+            self.mesh_painter.draw_meshes_command(frame_num as usize)
+                .map_err(|e| format!("at draw meshes: {e}"))?,
+            GpuCommand::InitialImageAccess { image: sheet, access: ImageAccess::TransferWrite },
+            GpuCommand::BlitFullImage { src: mesh_render_image, dst: sheet },
+            GpuCommand::FinalImageAccess { image: sheet, access: ImageAccess::Present }
+        ];
+        self.command_buffers[frame_num as usize].record(&commands, false)
+            .map_err(|e| format!("at command buffer record: {e}"))?;
 
-            self.painter.device.cmd_pipeline_barrier(
-                command_buffer.command_buffer,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::BY_REGION,
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .src_queue_family_index(self.painter.graphics_queue_family_index)
-                    .dst_queue_family_index(self.painter.graphics_queue_family_index)
-                    .image(sheet.image)
-                    .subresource_range(sheet.get_subresource_range()),
-                ]
-            );
+        self.command_buffers[frame_num as usize].submit(&[draw_complete_semaphore], &[], &[], Some(draw_complete_fence))
+            .map_err(|e| format!("at command buffer submit: {e}"))?;
 
-            self.painter.device.cmd_blit_image(
-                command_buffer.command_buffer,
-                mesh_render_image.image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                sheet.image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[
-                    vk::ImageBlit::default()
-                        .src_subresource(mesh_render_image.get_subresource())
-                        .src_offsets(mesh_render_image.get_full_size_offset())
-                        .dst_subresource(sheet.get_subresource())
-                        .dst_offsets(sheet.get_full_size_offset()),
-                ],
-                vk::Filter::NEAREST,
-            );
-
-            self.painter.device.cmd_pipeline_barrier(
-                command_buffer.command_buffer,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::BY_REGION,
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::empty())
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .src_queue_family_index(self.painter.graphics_queue_family_index)
-                    .dst_queue_family_index(self.painter.graphics_queue_family_index)
-                    .image(sheet.image)
-                    .subresource_range(sheet.get_subresource_range()),
-                ]
-            );
-
-            command_buffer.end().map_err(|e| format!("at end command buffer: {e}"))?;
-
-            command_buffer.submit(&[draw_complete_semaphore], &[], &[], Some(draw_complete_fence))
-                .map_err(|e| format!("at command buffer submit: {e}"))?;
-
-            self.sheets.present_image(frame_num, &[&self.image_available_semaphore, draw_complete_semaphore]).map_err(|e| format!("at present image: {e}"))?;
-        }
-        // println!("painted picture");
+        self.sheets.present_image(frame_num, &[&self.image_available_semaphore, draw_complete_semaphore]).map_err(|e| format!("at present image: {e}"))?;
+    
         Ok(())
     }
 }
