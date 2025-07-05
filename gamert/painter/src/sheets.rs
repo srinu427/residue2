@@ -44,7 +44,12 @@ impl Sheets {
                 .cloned()
                 .ok_or("no suitable surface format found".to_string())?;
 
-            let surface_resolution = surface_caps.current_extent;
+            let mut surface_resolution = surface_caps.current_extent;
+            if surface_resolution.width == u32::MAX || surface_resolution.height == u32::MAX {
+                let window_res = painter.window.inner_size();
+                surface_resolution.width = window_res.width;
+                surface_resolution.height = window_res.height;
+            }
 
             let surface_present_mode = surface_present_modes
                 .iter()
