@@ -115,7 +115,7 @@ impl PerFrameData {
 
         let commands = vec![
             GpuCommand::ImageAccessInit { image: &color_image, access: ImageAccess::TransferRead },
-            GpuCommand::ImageAccessInit { image: &depth_image, access: ImageAccess::Present }
+            GpuCommand::ImageAccessInit { image: &depth_image, access: ImageAccess::PipelineAttachment }
         ];
 
         command_buffer.record(&commands, true)
@@ -149,6 +149,7 @@ impl PerFrameData {
         unsafe {
             device.destroy_buffer(self.index_buffer, None);
             device.destroy_buffer(self.vertex_buffer, None);
+            device.destroy_buffer(self.scene_buffer, None);
             let _ = allocator.delete_allocations(
                 &[self.vertex_buffer, self.index_buffer],
                 &[&self.color_image, &self.depth_image],
@@ -392,7 +393,7 @@ impl MeshPainter {
         let commands = vec![
             GpuCommand::ImageAccessInit { image: &vk_image, access: ImageAccess::TransferWrite },
             GpuCommand::CopyBufferToImageComplete { buffer: stage_buffer, image: &vk_image },
-            GpuCommand::FinalImageAccess { image: &vk_image, access: ImageAccess::ShaderRead }
+            GpuCommand::ImageAccessHint { image: &vk_image, access: ImageAccess::ShaderRead },
         ];
         self.command_buffer.record(&commands, true)
             .map_err(|e| format!("at record command buffer: {e}"))?;
@@ -401,6 +402,12 @@ impl MeshPainter {
         self.command_buffer.submit(&[], &[], &[], Some(&fence))
             .map_err(|e| format!("at submit command buffer: {e}"))?;
         fence.wait().map_err(|e| format!("at texture upload fence wait: {e}"))?;
+
+        self.allocator.delete_allocations(&[stage_buffer], &[])
+            .map_err(|e| format!("at delete allocations: {e}"))?;
+        unsafe {
+            self.painter.device.destroy_buffer(stage_buffer, None);
+        }
 
         let texture_id = self.textures.insert(vk_image);
         Ok(texture_id)
@@ -525,7 +532,7 @@ impl MeshPainter {
             clear_values: vec![
                 vk::ClearValue {
                     color: vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 1.0],
+                        float32: [1.0, 1.0, 0.0, 1.0],
                     },
                 },
                 vk::ClearValue {
@@ -550,6 +557,9 @@ impl Drop for MeshPainter {
         self.textures.clear();
         for per_frame_data in self.per_frame_datas.drain(..) {
             per_frame_data.cleanup(device, &mut self.allocator);
+        }
+        unsafe {
+            device.destroy_sampler(self.sampler, None);
         }
     }
 }

@@ -18,6 +18,6 @@ layout(push_constant) uniform ObjInfo {
 } obj_info;
 
 void main() {
-    //outFragColor = texture(sampler2D(textures[obj_info.texture_id], samplers[0]), inUV.xy);
-    outFragColor = vec4(1.0,1.0,1.0,1.0);
+    outFragColor = texture(sampler2D(textures[obj_info.texture_id], samplers[0]), inUV.xy);
+    //outFragColor = vec4(1.0,1.0,1.0,1.0);
 }

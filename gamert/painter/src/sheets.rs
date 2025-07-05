@@ -209,12 +209,16 @@ impl Sheets {
         }
     }
 
-    pub fn acquire_next_image(&mut self, semaphore: &GpuFuture, fence: Option<&CpuFuture>) -> Result<u32, String> {
+    pub fn acquire_next_image(&mut self, semaphore: Option<&GpuFuture>, fence: Option<&CpuFuture>) -> Result<u32, String> {
         unsafe {
             let vk_fence = fence.map_or(vk::Fence::null(), |fence| fence.fence);
+            let vk_semaphore = semaphore.map_or(vk::Semaphore::null(), |semaphore| semaphore.semaphore);
+            if vk_fence == vk::Fence::null() && vk_semaphore == vk::Semaphore::null() {
+                return Err("either fence or semaphore must be provided".to_string());
+            }
             loop {
                 let (img_id, refresh_needed) = self.swapchain_device
-                    .acquire_next_image(self.swapchain, std::u64::MAX, semaphore.semaphore, vk_fence)
+                    .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence)
                     .map_err(|e| format!("at acquire next image: {e}"))?;
 
                 if refresh_needed {

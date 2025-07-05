@@ -52,7 +52,7 @@ pub struct Canvas {
     draw_complete_semaphores: Vec<GpuFuture>,
     draw_complete_fences: Vec<CpuFuture>,
     upload_command_buffer: CommandBuffer,
-    image_available_semaphore: GpuFuture,
+    acquire_image_future: CpuFuture,
 }
 
 impl Canvas {
@@ -90,9 +90,8 @@ impl Canvas {
             })
             .collect::<Result<Vec<_>, String>>()?;
 
-        
-        let image_available_semaphore = GpuFuture::new(painter.clone())
-            .map_err(|e| format!("at create image available semaphore: {e}"))?;
+        let acquire_image_future = CpuFuture::new(painter.clone(), false)
+            .map_err(|e| format!("at create acquire image future: {e}"))?;
 
         let square_mesh = mesh_painter.add_mesh(square_verts(), square_indices());
         let default_texture = mesh_painter.add_texture("textures/default.png")
@@ -110,26 +109,27 @@ impl Canvas {
             draw_complete_semaphores,
             draw_complete_fences,
             upload_command_buffer,
-            image_available_semaphore,
+            acquire_image_future,
         })
     }
 
     pub fn paint(&mut self) -> Result<(), String> {
-        let frame_num = self.sheets.acquire_next_image(&self.image_available_semaphore, None)
-            .expect("Failed to acquire next image");
-        let draw_complete_semaphore = &self.draw_complete_semaphores[frame_num as usize];
-        let draw_complete_fence = &self.draw_complete_fences[frame_num as usize];
-        let cam_data = CamData::new(glam::vec4(0.0, 0.0, -1.0, 1.0), glam::vec4(0.0, 0.0, 0.0, 0.0));
+        // Wait till next image is available
+        let frame_num = self.sheets.acquire_next_image(None, Some(&self.acquire_image_future))
+            .map_err(|e| format!("at acquire next image: {e}"))?;
+        self.acquire_image_future.wait()
+            .map_err(|e| format!("at wait for acquire image future: {e}"))?;
+        self.acquire_image_future.reset()
+            .map_err(|e| format!("at reset acquire image future: {e}"))?;
 
-        draw_complete_fence.wait()
-            .map_err(|e| format!("at wait for fence: {e}"))?;
-        draw_complete_fence.reset()
-            .map_err(|e| format!("at reset fence: {e}"))?;
+        let draw_complete_semaphore = &self.draw_complete_semaphores[frame_num as usize];
+        let cam_data = CamData::new(glam::vec4(0.0, 0.0, 1.0, 1.0), glam::vec4(0.0, 0.0, 0.0, 0.0));
 
         self.command_buffers[frame_num as usize].reset().map_err(|e| format!("at reset command buffer: {e}"))?;
 
         self.mesh_painter.update_inputs(
-            frame_num as usize, &self.drawables,
+            frame_num as usize,
+            &self.drawables,
             cam_data
         )
             .map_err(|e| format!("at update vb and ib: {e}"))?;
@@ -138,28 +138,30 @@ impl Canvas {
         let sheet = &self.sheets.swapchain_images[frame_num as usize];
 
         let commands = vec![
-            GpuCommand::InitialImageAccess { image: mesh_render_image, access: ImageAccess::TransferRead },
+            GpuCommand::ImageAccessHint { image: mesh_render_image, access: ImageAccess::TransferRead },
+            GpuCommand::ImageAccessHint { image: mesh_render_image, access: ImageAccess::PipelineAttachment },
             self.mesh_painter.draw_meshes_command(frame_num as usize)
                 .map_err(|e| format!("at draw meshes: {e}"))?,
-            GpuCommand::InitialImageAccess { image: sheet, access: ImageAccess::TransferWrite },
+            GpuCommand::ImageAccessHint { image: sheet, access: ImageAccess::Present },
             GpuCommand::BlitFullImage { src: mesh_render_image, dst: sheet },
-            GpuCommand::FinalImageAccess { image: sheet, access: ImageAccess::Present }
+            GpuCommand::ImageAccessHint { image: sheet, access: ImageAccess::Present }
         ];
         self.command_buffers[frame_num as usize].record(&commands, false)
             .map_err(|e| format!("at command buffer record: {e}"))?;
 
-        self.command_buffers[frame_num as usize].submit(&[draw_complete_semaphore], &[], &[], Some(draw_complete_fence))
+        self.command_buffers[frame_num as usize].submit(&[draw_complete_semaphore], &[], &[], None)
             .map_err(|e| format!("at command buffer submit: {e}"))?;
 
-        self.sheets.present_image(frame_num, &[&self.image_available_semaphore, draw_complete_semaphore]).map_err(|e| format!("at present image: {e}"))?;
-    
+        self.sheets.present_image(frame_num, &[draw_complete_semaphore]).map_err(|e| format!("at present image: {e}"))?;
         Ok(())
     }
 }
 
 impl Drop for Canvas {
     fn drop(&mut self) {
-
+        unsafe {
+            self.painter.device.device_wait_idle().map_err(|e| eprintln!("at wait for device idle: {e}")).ok();
+        }
     }
 }
 

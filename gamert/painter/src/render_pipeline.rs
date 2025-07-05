@@ -55,11 +55,11 @@ impl SingePassRenderPipeline {
             color_attachments.clone()
         };
         let subpass_color_attachments = (0..color_attachments.len())
-            .map(|i| vk::AttachmentReference::default().attachment(i as _))
+            .map(|i| vk::AttachmentReference::default().layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL).attachment(i as _))
             .collect::<Vec<_>>();
         let subpass_depth_attachment = depth_attachment
             .map(|_| {
-                vk::AttachmentReference::default().attachment(color_attachments.len() as _)
+                vk::AttachmentReference::default().layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL).attachment(color_attachments.len() as _)
             });
         let mut subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -143,16 +143,25 @@ impl SingePassRenderPipeline {
                 .blend_enable(false)];
             let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
                 .attachments(&color_blend_attachments);
+            let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(depth_attachment.is_some())
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::LESS)
+                .depth_bounds_test_enable(false)
+                .stencil_test_enable(false);
             let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
                 .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
             let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
+                .render_pass(render_pass)
                 .stages(&shader_stages)
                 .vertex_input_state(&vertex_input_state)
                 .input_assembly_state(&input_assembly_state)
+                .layout(pipeline_layout)
                 .viewport_state(&viewport_state)
                 .rasterization_state(&rasterization_state)
                 .multisample_state(&multisample_state)
                 .color_blend_state(&color_blend_state)
+                .depth_stencil_state(&depth_stencil_state)
                 .dynamic_state(&dynamic_state);
             painter
                 .device
@@ -187,7 +196,7 @@ impl SingePassRenderPipeline {
                 .device
                 .create_framebuffer(&framebuffer_create_info, None)
                 .map_err(|e| format!("at framebuffer creation: {e}"))?;
-            Ok(RenderOutput { render_pass: self.render_pass ,framebuffer, painter: self.painter.clone() })
+            Ok(RenderOutput { extent: attachments[0].extent, render_pass: self.render_pass ,framebuffer, painter: self.painter.clone() })
         }
     }
 }
@@ -197,17 +206,13 @@ impl Drop for SingePassRenderPipeline {
         unsafe {
             self.painter.device.destroy_pipeline(self.pipeline, None);
             self.painter.device.destroy_pipeline_layout(self.pipeline_layout, None);
-            for shader_input_layout in &self.shader_input_layouts {
-                self.painter
-                    .device
-                    .destroy_descriptor_set_layout(shader_input_layout.descriptor_set_layout, None);
-            }
             self.painter.device.destroy_render_pass(self.render_pass, None);
         }
     }
 }
 
 pub struct RenderOutput {
+    extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     pub framebuffer: vk::Framebuffer,
     painter: Arc<Painter>,

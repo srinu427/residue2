@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 use hashbrown::HashMap;
 
-use crate::{CpuFuture, GpuFuture, Image2d, ImageAccess, Painter};
+use crate::{image::is_format_depth, CpuFuture, GpuFuture, Image2d, ImageAccess, Painter};
 
 pub struct ImageTransitionInfo<'a> {
     pub image: &'a Image2d,
@@ -22,7 +22,7 @@ pub enum GpuRenderPassCommand {
 
 pub enum GpuCommand<'a> {
     ImageAccessInit{image: &'a Image2d, access: ImageAccess},
-    InitialImageAccess{image: &'a Image2d, access: ImageAccess},
+    ImageAccessHint{image: &'a Image2d, access: ImageAccess},
     BlitFullImage{src: &'a Image2d, dst: &'a Image2d},
     RunRenderPass{
         render_pass: vk::RenderPass,
@@ -34,18 +34,16 @@ pub enum GpuCommand<'a> {
         commands: Vec<GpuRenderPassCommand>,
     },
     CopyBufferToImageComplete{buffer: vk::Buffer, image: &'a Image2d},
-    FinalImageAccess{image: &'a Image2d, access: ImageAccess},
 }
 
 impl<'a> GpuCommand<'a> {
     pub fn access_transitions(&self) -> Vec<ImageTransitionInfo> {
         match self {
             Self::ImageAccessInit { image, access } => vec![ImageTransitionInfo { image, old_access: Some(ImageAccess::None), new_access: Some(*access) }],
-            Self::InitialImageAccess { image, access } => vec![ImageTransitionInfo { image, old_access: Some(*access), new_access: None }],
+            Self::ImageAccessHint { image, access } => vec![ImageTransitionInfo { image, old_access: None, new_access: Some(*access) }],
             Self::BlitFullImage { src, dst } => vec![ImageTransitionInfo { image: src, old_access: None, new_access: Some(ImageAccess::TransferRead) }, ImageTransitionInfo { image: dst, old_access: None, new_access: Some(ImageAccess::TransferWrite) }],
             Self::RunRenderPass { render_pass: _, framebuffer: _, extent: _, clear_values: _, pipelines: _, pipeline_layouts: _, commands: _ } => vec![],
             Self::CopyBufferToImageComplete { buffer: _, image } => vec![ImageTransitionInfo { image, old_access: None, new_access: Some(ImageAccess::TransferWrite) }],
-            Self::FinalImageAccess { image, access } => vec![ImageTransitionInfo { image, old_access: None, new_access: Some(*access) }],
         }
     }
 }
@@ -126,13 +124,10 @@ impl CommandBuffer {
                         Some(new_access) => {
                             if let Some((_, last_access)) = image_transitions.last() {
                                 if *last_access != new_access {
-                                    image_transitions.push((command_idx, new_access));
+                                    image_transitions.push((command_idx + 1, new_access));
                                 }
                             } else {
-                                if image_transitions.len() == 0 && new_access != ImageAccess::None {
-                                    image_transitions.push((command_idx, ImageAccess::None));
-                                }
-                                image_transitions.push((command_idx, new_access));
+                                image_transitions.push((command_idx + 1, new_access));
                             }
                         }
                         None => {}
@@ -142,11 +137,19 @@ impl CommandBuffer {
 
             for (command_idx, command) in commands.iter().enumerate() {
                 for (_, (image, transitions_needed)) in image_accesses.iter() {
-                    let Some(access_idx) = transitions_needed.iter().position(|(x, _)| *x == command_idx) else {
+                    let Some(access_idx) = transitions_needed.iter().position(|(x, _)| *x == command_idx + 1) else {
                         continue
                     };
                     let access_new = transitions_needed[access_idx].1;
-                    let access_old = transitions_needed.get(access_idx - 1).map(|x| x.1).unwrap_or(ImageAccess::None);
+                    if access_idx == 0 {
+                        continue
+                    }
+                    let access_old = transitions_needed[access_idx - 1].1;
+                    if access_old == access_new {
+                        continue
+                    }
+                    let is_depth_image = is_format_depth(image.format);
+                    // println!("image transition: {:?} {access_old:?} -> {access_new:?}", image.image);
                     self.painter.device.cmd_pipeline_barrier(
                         self.command_buffer,
                         access_old.get_pipeline_stage(),
@@ -157,10 +160,10 @@ impl CommandBuffer {
                         &[
                             vk::ImageMemoryBarrier::default()
                                 .image(image.image)
-                                .src_access_mask(access_old.to_access_flags(false))
-                                .dst_access_mask(access_new.to_access_flags(false))
-                                .old_layout(access_old.get_image_layout(false))
-                                .new_layout(access_new.get_image_layout(false))
+                                .src_access_mask(access_old.to_access_flags(is_depth_image))
+                                .dst_access_mask(access_new.to_access_flags(is_depth_image))
+                                .old_layout(access_old.get_image_layout(is_depth_image))
+                                .new_layout(access_new.get_image_layout(is_depth_image))
                                 .subresource_range(image.get_subresource_range()),
                         ]
                     );
@@ -168,7 +171,7 @@ impl CommandBuffer {
                 }
                 match command {
                     GpuCommand::ImageAccessInit { image, access } => {},
-                    GpuCommand::InitialImageAccess { image, access } => {},
+                    GpuCommand::ImageAccessHint { image, access } => {},
                     GpuCommand::BlitFullImage { src, dst } => {
                         self
                             .painter
@@ -199,6 +202,8 @@ impl CommandBuffer {
                                 .clear_values(clear_values),
                             vk::SubpassContents::INLINE,
                         );
+                        self.painter.device.cmd_set_viewport(self.command_buffer, 0, &[vk::Viewport::default().width(extent.width as f32).height(extent.height as f32)]);
+                        self.painter.device.cmd_set_scissor(self.command_buffer, 0, &[vk::Rect2D::default().extent(*extent)]);
 
                         for rp_command in rp_commands.iter() {
                             match rp_command {
@@ -242,7 +247,6 @@ impl CommandBuffer {
                             ]
                         );
                     },
-                    GpuCommand::FinalImageAccess { image, access } => todo!(),
                 }
             }
 

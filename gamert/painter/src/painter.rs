@@ -217,6 +217,7 @@ impl Painter {
 impl Drop for Painter {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_device(None);
             self.surface_instance.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
