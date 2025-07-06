@@ -4,7 +4,10 @@ use ash::vk;
 use glam::Vec4Swizzles;
 use include_bytes_aligned::include_bytes_aligned;
 use painter::{
-    ash, slotmap::{new_key_type, SlotMap}, Allocator, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputType, SingePassRenderPipeline
+    Allocator, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d,
+    ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo,
+    ShaderInputLayout, ShaderInputType, SingePassRenderPipeline, ash,
+    slotmap::{SlotMap, new_key_type},
 };
 
 static VERTEX_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.vert.spv");
@@ -23,12 +26,7 @@ pub struct CamData {
 impl CamData {
     pub fn new(pos: glam::Vec4, look_at: glam::Vec4) -> Self {
         let view = glam::Mat4::look_at_rh(pos.xyz(), look_at.xyz(), glam::Vec3::new(0.0, 1.0, 0.0));
-        let proj = glam::Mat4::perspective_rh(
-            90.0f32.to_radians(),
-            1.0,
-            0.1,
-            100.0,
-        );
+        let proj = glam::Mat4::perspective_rh(90.0f32.to_radians(), 1.0, 0.1, 100.0);
         let view_proj = proj * view;
         Self {
             pos,
@@ -54,7 +52,7 @@ pub struct PerFrameData {
     scene_buffer: vk::Buffer,
     color_image: Image2d,
     depth_image: Image2d,
-    render_output: RenderOutput
+    render_output: RenderOutput,
 }
 
 impl PerFrameData {
@@ -114,21 +112,32 @@ impl PerFrameData {
             .map_err(|e| format!("at create depth image: {e}"))?;
 
         let commands = vec![
-            GpuCommand::ImageAccessInit { image: &color_image, access: ImageAccess::TransferRead },
-            GpuCommand::ImageAccessInit { image: &depth_image, access: ImageAccess::PipelineAttachment }
+            GpuCommand::ImageAccessInit {
+                image: &color_image,
+                access: ImageAccess::TransferRead,
+            },
+            GpuCommand::ImageAccessInit {
+                image: &depth_image,
+                access: ImageAccess::PipelineAttachment,
+            },
         ];
 
-        command_buffer.record(&commands, true)
+        command_buffer
+            .record(&commands, true)
             .map_err(|e| format!("at record command buffer: {e}"))?;
 
-        let fence = CpuFuture::new(pipeline.painter.clone(), false).map_err(|e| format!("at create fence: {e}"))?;
-        command_buffer.submit(&[], &[], &[], Some(&fence)).map_err(|e| format!("at submit command buffer: {e}"))?;
+        let fence = CpuFuture::new(pipeline.painter.clone(), false)
+            .map_err(|e| format!("at create fence: {e}"))?;
+        command_buffer
+            .submit(&[], &[], &[], Some(&fence))
+            .map_err(|e| format!("at submit command buffer: {e}"))?;
         fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
-        command_buffer.reset().map_err(|e| format!("at reset command buffer: {e}"))?;
+        command_buffer
+            .reset()
+            .map_err(|e| format!("at reset command buffer: {e}"))?;
 
-        let render_output = pipeline.create_render_output(
-            vec![&color_image, &depth_image],
-        )
+        let render_output = pipeline
+            .create_render_output(vec![&color_image, &depth_image])
             .map_err(|e| format!("at create render output: {e}"))?;
 
         Ok(Self {
@@ -150,10 +159,11 @@ impl PerFrameData {
             device.destroy_buffer(self.index_buffer, None);
             device.destroy_buffer(self.vertex_buffer, None);
             device.destroy_buffer(self.scene_buffer, None);
-            let _ = allocator.delete_allocations(
-                &[self.vertex_buffer, self.index_buffer],
-                &[&self.color_image, &self.depth_image],
-            )
+            let _ = allocator
+                .delete_allocations(
+                    &[self.vertex_buffer, self.index_buffer],
+                    &[&self.color_image, &self.depth_image],
+                )
                 .inspect_err(|e| eprintln!("at delete allocations: {e}"));
         }
     }
@@ -184,7 +194,7 @@ pub struct ObjDrawParams {
     pub vert_offset: i32,
     pub idx_offset: u32,
     pub idx_count: u32,
-    pub obj_info: GpuObjectInfo
+    pub obj_info: GpuObjectInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -198,9 +208,11 @@ pub struct Vertex {
 
 impl Vertex {
     fn get_binding_description() -> Vec<vk::VertexInputBindingDescription> {
-        vec![vk::VertexInputBindingDescription::default()
-            .stride(size_of::<Self>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)]
+        vec![
+            vk::VertexInputBindingDescription::default()
+                .stride(size_of::<Self>() as u32)
+                .input_rate(vk::VertexInputRate::VERTEX),
+        ]
     }
 
     fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
@@ -274,7 +286,11 @@ impl MeshPainter {
         return Err("No suitable depth format found".to_string());
     }
 
-    pub fn new(painter: Arc<Painter>, resolution: vk::Extent2D, frame_count: usize) -> Result<Self, String> {
+    pub fn new(
+        painter: Arc<Painter>,
+        resolution: vk::Extent2D,
+        frame_count: usize,
+    ) -> Result<Self, String> {
         unsafe {
             let device = &painter.device;
 
@@ -289,13 +305,33 @@ impl MeshPainter {
 
             let pipeline = SingePassRenderPipeline::new(
                 painter.clone(),
-                vec![(color_attachment_format, vk::AttachmentLoadOp::CLEAR, vk::AttachmentStoreOp::STORE)],
-                Some((depth_attachment_format, vk::AttachmentLoadOp::CLEAR, vk::AttachmentStoreOp::DONT_CARE)),
+                vec![(
+                    color_attachment_format,
+                    vk::AttachmentLoadOp::CLEAR,
+                    vk::AttachmentStoreOp::STORE,
+                )],
+                Some((
+                    depth_attachment_format,
+                    vk::AttachmentLoadOp::CLEAR,
+                    vk::AttachmentStoreOp::DONT_CARE,
+                )),
                 vec![
-                    vec![ShaderInputBindingInfo{ _type: ShaderInputType::StorageBuffer, count: 1 }],
+                    vec![ShaderInputBindingInfo {
+                        _type: ShaderInputType::StorageBuffer,
+                        count: 1,
+                        dynamic: false,
+                    }],
                     vec![
-                        ShaderInputBindingInfo{ _type: ShaderInputType::Sampler, count: 1 },
-                        ShaderInputBindingInfo{ _type: ShaderInputType::SampledImage2d, count: MAX_TEXTURES as _ },
+                        ShaderInputBindingInfo {
+                            _type: ShaderInputType::Sampler,
+                            count: 1,
+                            dynamic: false,
+                        },
+                        ShaderInputBindingInfo {
+                            _type: ShaderInputType::SampledImage2d,
+                            count: MAX_TEXTURES as _,
+                            dynamic: true,
+                        },
                     ],
                 ],
                 size_of::<GpuObjectInfo>(),
@@ -304,25 +340,32 @@ impl MeshPainter {
                 Vertex::get_binding_description(),
                 Vertex::get_attribute_descriptions(),
             )
-                .map_err(|e| format!("at create render pipeline: {e}"))?;
+            .map_err(|e| format!("at create render pipeline: {e}"))?;
 
             let shader_input_allocator = ShaderInputAllocator::new(
                 painter.clone(),
                 vec![
                     (ShaderInputType::StorageBuffer, frame_count as u32),
                     (ShaderInputType::Sampler, 2),
-                    (ShaderInputType::SampledImage2d, (MAX_TEXTURES * frame_count) as u32),
+                    (
+                        ShaderInputType::SampledImage2d,
+                        (MAX_TEXTURES * frame_count) as u32,
+                    ),
                 ],
                 4 * frame_count as u32,
             )
-                .map_err(|e| format!("at create shader input allocator: {e}"))?;
+            .map_err(|e| format!("at create shader input allocator: {e}"))?;
 
             let mut allocator =
                 Allocator::new(painter.clone()).map_err(|e| format!("at create allocator: {e}"))?;
 
-            let command_pool = CommandPool::new(painter.clone()).map_err(|e| format!("at create command pool: {e}"))?;
+            let command_pool = CommandPool::new(painter.clone())
+                .map_err(|e| format!("at create command pool: {e}"))?;
 
-            let mut command_buffer = command_pool.allocate_command_buffers(1).map_err(|e| format!("at allocate command buffer: {e}"))?.swap_remove(0);
+            let mut command_buffer = command_pool
+                .allocate_command_buffers(1)
+                .map_err(|e| format!("at allocate command buffer: {e}"))?
+                .swap_remove(0);
 
             let per_frame_datas = (0..frame_count)
                 .map(|_| {
@@ -370,40 +413,59 @@ impl MeshPainter {
     pub fn add_texture(&mut self, path: &str) -> Result<TextureID, String> {
         let image = image::open(path).map_err(|e| format!("at open image: {e}"))?;
         let image_data = image.to_rgba8();
-        let vk_image = self.allocator.create_image_2d(
-            vk::Format::R8G8B8A8_UNORM,
-            vk::Extent2D { width: image.width(), height: image.height() },
-            vec![
-                ImageAccess::TransferWrite,
-                ImageAccess::ShaderRead,
-            ],
-            true
-        )
+        let vk_image = self
+            .allocator
+            .create_image_2d(
+                vk::Format::R8G8B8A8_UNORM,
+                vk::Extent2D {
+                    width: image.width(),
+                    height: image.height(),
+                },
+                vec![ImageAccess::TransferWrite, ImageAccess::ShaderRead],
+                true,
+            )
             .map_err(|e| format!("at vk create image: {e}"))?;
-        let stage_buffer = self.allocator
+        let stage_buffer = self
+            .allocator
             .create_buffer(
                 image_data.len() as u64,
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 false,
             )
             .map_err(|e| format!("at create stage buffer: {e}"))?;
-        self.allocator.write_to_buffer_mem(stage_buffer, &image_data)
+        self.allocator
+            .write_to_buffer_mem(stage_buffer, &image_data)
             .map_err(|e| format!("at write to staging buffer mem: {e}"))?;
 
         let commands = vec![
-            GpuCommand::ImageAccessInit { image: &vk_image, access: ImageAccess::TransferWrite },
-            GpuCommand::CopyBufferToImageComplete { buffer: stage_buffer, image: &vk_image },
-            GpuCommand::ImageAccessHint { image: &vk_image, access: ImageAccess::ShaderRead },
+            GpuCommand::ImageAccessInit {
+                image: &vk_image,
+                access: ImageAccess::TransferWrite,
+            },
+            GpuCommand::CopyBufferToImageComplete {
+                buffer: stage_buffer,
+                image: &vk_image,
+            },
+            GpuCommand::ImageAccessHint {
+                image: &vk_image,
+                access: ImageAccess::ShaderRead,
+            },
         ];
-        self.command_buffer.record(&commands, true)
+        self.command_buffer
+            .record(&commands, true)
             .map_err(|e| format!("at record command buffer: {e}"))?;
 
-        let fence = CpuFuture::new(self.painter.clone(), false).map_err(|e| format!("at create upload texture fence: {e}"))?;
-        self.command_buffer.submit(&[], &[], &[], Some(&fence))
+        let fence = CpuFuture::new(self.painter.clone(), false)
+            .map_err(|e| format!("at create upload texture fence: {e}"))?;
+        self.command_buffer
+            .submit(&[], &[], &[], Some(&fence))
             .map_err(|e| format!("at submit command buffer: {e}"))?;
-        fence.wait().map_err(|e| format!("at texture upload fence wait: {e}"))?;
+        fence
+            .wait()
+            .map_err(|e| format!("at texture upload fence wait: {e}"))?;
 
-        self.allocator.delete_allocations(&[stage_buffer], &[])
+        self.allocator
+            .delete_allocations(&[stage_buffer], &[])
             .map_err(|e| format!("at delete allocations: {e}"))?;
         unsafe {
             self.painter.device.destroy_buffer(stage_buffer, None);
@@ -413,7 +475,12 @@ impl MeshPainter {
         Ok(texture_id)
     }
 
-    pub fn update_inputs(&mut self, frame_number: usize, drawables: &[DrawableMeshAndTexture], camera: CamData) -> Result<(), String> {
+    pub fn update_inputs(
+        &mut self,
+        frame_number: usize,
+        drawables: &[DrawableMeshAndTexture],
+        camera: CamData,
+    ) -> Result<(), String> {
         let mut vb_data = vec![];
         let mut ib_data = vec![];
 
@@ -423,20 +490,30 @@ impl MeshPainter {
 
         let textures_array = self.textures.iter().collect::<Vec<_>>();
 
-        let texture_idx_map = textures_array.iter().enumerate().map(|(tid, tex)| (tex.0, tid)).collect::<HashMap<_, _>>();
+        let texture_idx_map = textures_array
+            .iter()
+            .enumerate()
+            .map(|(tid, tex)| (tex.0, tid))
+            .collect::<HashMap<_, _>>();
 
         let mut objects = vec![];
 
         for drawable in drawables {
             let Some(mesh) = self.meshes.get(drawable.mesh_name) else {
-                continue
+                continue;
             };
             let Some(&texture_idx) = texture_idx_map.get(&drawable.texture_name) else {
-                continue
+                continue;
             };
             vb_data.extend_from_slice(&mesh.vertices);
-            ib_data.extend_from_slice(&mesh.indices.iter().map(|i| i + vb_offset as u32).collect::<Vec<_>>());
-            
+            ib_data.extend_from_slice(
+                &mesh
+                    .indices
+                    .iter()
+                    .map(|i| i + vb_offset as u32)
+                    .collect::<Vec<_>>(),
+            );
+
             let object = GpuObjectInfo {
                 obj_id: objects.len() as u32,
                 mesh_id,
@@ -461,19 +538,20 @@ impl MeshPainter {
         self.per_frame_datas[norm_frame_number].next_draw_params = objects;
 
         unsafe {
-            let scene_data = SceneDescriptorData {
-                cam_data: camera,
-            };
-            self.allocator.write_to_buffer_mem(sb, &[scene_data].align_to::<u8>().1)
+            let scene_data = SceneDescriptorData { cam_data: camera };
+            self.allocator
+                .write_to_buffer_mem(sb, &[scene_data].align_to::<u8>().1)
                 .map_err(|e| format!("at write to scene buffer mem: {e}"))?;
-            self.allocator.write_to_buffer_mem(vb, vb_data.as_slice().align_to::<u8>().1)
+            self.allocator
+                .write_to_buffer_mem(vb, vb_data.as_slice().align_to::<u8>().1)
                 .map_err(|e| format!("at write to vertex buffer mem: {e}"))?;
-            self.allocator.write_to_buffer_mem(ib, ib_data.as_slice().align_to::<u8>().1)
+            self.allocator
+                .write_to_buffer_mem(ib, ib_data.as_slice().align_to::<u8>().1)
                 .map_err(|e| format!("at write to index buffer mem: {e}"))?;
 
             let scene_dset = self.per_frame_datas[norm_frame_number].scene_descriptor_set;
             let texture_dset = self.per_frame_datas[norm_frame_number].texture_descriptor_set;
-            
+
             self.painter.device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::default()
@@ -481,49 +559,69 @@ impl MeshPainter {
                         .dst_binding(0)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1)
-                        .buffer_info(&[vk::DescriptorBufferInfo::default().buffer(sb).range(vk::WHOLE_SIZE)]),
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(sb)
+                            .range(vk::WHOLE_SIZE)]),
                     vk::WriteDescriptorSet::default()
                         .dst_set(texture_dset)
                         .dst_binding(0)
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .descriptor_count(1)
-                        .image_info(&[vk::DescriptorImageInfo::default()
-                            .sampler(self.sampler)]),
+                        .image_info(&[vk::DescriptorImageInfo::default().sampler(self.sampler)]),
                     vk::WriteDescriptorSet::default()
                         .dst_set(texture_dset)
                         .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                         .descriptor_count(textures_array.len() as _)
-                        .image_info(&textures_array.iter().map(|(_, tex)| {
-                            vk::DescriptorImageInfo::default()
-                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                .image_view(tex.image_view)
-                        }).collect::<Vec<_>>()),
+                        .image_info(
+                            &textures_array
+                                .iter()
+                                .map(|(_, tex)| {
+                                    vk::DescriptorImageInfo::default()
+                                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                        .image_view(tex.image_view)
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
                 ],
-                &[]
+                &[],
             );
             // println!("number of textures written: {}", textures_array.len());
         }
-        
+
         Ok(())
     }
 
-    pub fn draw_meshes_command(
-        &self,
-        frame_number: usize,
-    ) -> Result<GpuCommand, String> {
+    pub fn draw_meshes_command(&self, frame_number: usize) -> Result<GpuCommand, String> {
         let frame_number = frame_number % self.per_frame_datas.len();
         let per_frame_data = &self.per_frame_datas[frame_number];
         let mut render_cmds = vec![];
         render_cmds.push(GpuRenderPassCommand::BindPipeline { pipeline: 0 });
-        render_cmds.push(GpuRenderPassCommand::BindVertexBuffers { buffers: vec![per_frame_data.vertex_buffer] });
-        render_cmds.push(GpuRenderPassCommand::BindIndexBuffer { buffer: per_frame_data.index_buffer });
-        render_cmds.push(GpuRenderPassCommand::BindShaderInput { pipeline_layout: 0, descriptor_sets: vec![per_frame_data.scene_descriptor_set, per_frame_data.texture_descriptor_set] });
+        render_cmds.push(GpuRenderPassCommand::BindVertexBuffers {
+            buffers: vec![per_frame_data.vertex_buffer],
+        });
+        render_cmds.push(GpuRenderPassCommand::BindIndexBuffer {
+            buffer: per_frame_data.index_buffer,
+        });
+        render_cmds.push(GpuRenderPassCommand::BindShaderInput {
+            pipeline_layout: 0,
+            descriptor_sets: vec![
+                per_frame_data.scene_descriptor_set,
+                per_frame_data.texture_descriptor_set,
+            ],
+        });
         for draw_param in &per_frame_data.next_draw_params {
             unsafe {
-                render_cmds.push(GpuRenderPassCommand::SetPushConstant { pipeline_layout: 0, data: [draw_param.obj_info].align_to::<u8>().1.to_vec() });
+                render_cmds.push(GpuRenderPassCommand::SetPushConstant {
+                    pipeline_layout: 0,
+                    data: [draw_param.obj_info].align_to::<u8>().1.to_vec(),
+                });
             }
-            render_cmds.push(GpuRenderPassCommand::Draw { count: draw_param.idx_count, vertex_offset: draw_param.vert_offset, index_offset: draw_param.idx_offset });
+            render_cmds.push(GpuRenderPassCommand::Draw {
+                count: draw_param.idx_count,
+                vertex_offset: draw_param.vert_offset,
+                index_offset: draw_param.idx_offset,
+            });
         }
         let gpu_command = GpuCommand::RunRenderPass {
             render_pass: self.pipeline.render_pass,
@@ -540,7 +638,7 @@ impl MeshPainter {
                         depth: 1.0,
                         stencil: 0,
                     },
-                }
+                },
             ],
             pipelines: vec![self.pipeline.pipeline],
             pipeline_layouts: vec![self.pipeline.pipeline_layout],

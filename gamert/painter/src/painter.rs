@@ -1,5 +1,8 @@
 use ash::{ext, khr, vk};
-use winit::{raw_window_handle::{HasDisplayHandle, HasWindowHandle}, window::Window};
+use winit::{
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    window::Window,
+};
 
 pub fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -171,7 +174,8 @@ impl Painter {
                 .descriptor_binding_sampled_image_update_after_bind(true)
                 .descriptor_binding_partially_bound(true)
                 .descriptor_binding_variable_descriptor_count(true);
-            let mut dynamic_rendering_switch = vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
+            let mut dynamic_rendering_switch =
+                vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
             let device_features = vk::PhysicalDeviceFeatures::default();
 
             let device_create_info = vk::DeviceCreateInfo::default()

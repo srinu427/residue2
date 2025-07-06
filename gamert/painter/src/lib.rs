@@ -17,11 +17,13 @@ mod sheets;
 mod sync;
 
 pub use allocator::Allocator;
-pub use command::{GpuRenderPassCommand, GpuCommand, CommandBuffer, CommandPool};
-pub use image::{ImageAccess, Image2d};
+pub use command::{CommandBuffer, CommandPool, GpuCommand, GpuRenderPassCommand};
+pub use image::{Image2d, ImageAccess};
 pub use painter::Painter;
-pub use render_pipeline::{SingePassRenderPipeline, RenderOutput};
-pub use shader_input::{ShaderInputType, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputAllocator};
+pub use render_pipeline::{RenderOutput, SingePassRenderPipeline};
+pub use shader_input::{
+    ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputType,
+};
 pub use sheets::Sheets;
 pub use sync::{CpuFuture, GpuFuture};
 
@@ -40,7 +42,10 @@ impl ShaderModule {
                     None,
                 )
                 .map_err(|e| format!("at shader module creation: {e}"))?;
-            Ok(Self { shader_module, painter: painter.clone() })
+            Ok(Self {
+                shader_module,
+                painter: painter.clone(),
+            })
         }
     }
 
@@ -52,8 +57,7 @@ impl ShaderModule {
 impl Drop for ShaderModule {
     fn drop(&mut self) {
         unsafe {
-            self
-                .painter
+            self.painter
                 .device
                 .destroy_shader_module(self.shader_module, None);
         }

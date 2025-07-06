@@ -1,4 +1,4 @@
-use gamert::{start_window_event_loop, Game};
+use gamert::{Game, start_window_event_loop};
 
 fn main() {
     let mut game = Game::new();

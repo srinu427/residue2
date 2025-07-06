@@ -37,8 +37,23 @@ impl Sheets {
                 .iter()
                 .filter(|format| format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
                 .filter(|format| {
-                    format.format == vk::Format::B8G8R8A8_SRGB
-                        || format.format == vk::Format::R8G8B8A8_SRGB
+                    let supported = painter
+                        .instance
+                        .get_physical_device_format_properties(
+                            painter.physical_device,
+                            format.format,
+                        )
+                        .optimal_tiling_features
+                        .contains(
+                            vk::FormatFeatureFlags::COLOR_ATTACHMENT
+                                | vk::FormatFeatureFlags::TRANSFER_DST
+                                | vk::FormatFeatureFlags::STORAGE_IMAGE,
+                        );
+                    supported
+                        && (format.format == vk::Format::B8G8R8A8_UNORM
+                            || format.format == vk::Format::R8G8B8A8_UNORM
+                            || format.format == vk::Format::B8G8R8A8_SRGB
+                            || format.format == vk::Format::R8G8B8A8_SRGB)
                 })
                 .next()
                 .cloned()
@@ -77,7 +92,7 @@ impl Sheets {
                 .image_usage(
                     vk::ImageUsageFlags::COLOR_ATTACHMENT
                         | vk::ImageUsageFlags::TRANSFER_DST
-                        // | vk::ImageUsageFlags::STORAGE,
+                        | vk::ImageUsageFlags::STORAGE,
                 )
                 .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .pre_transform(surface_caps.current_transform)
@@ -94,20 +109,23 @@ impl Sheets {
                 .map_err(|e| format!("at swapchain images: {e}"))?
                 .into_iter()
                 .map(|image| {
-                    let image_view = Image2d::create_image_view(&painter, image, surface_format.format)
-                        .map_err(|e| format!("at image view creation: {e}"))?;
+                    let image_view =
+                        Image2d::create_image_view(&painter, image, surface_format.format)
+                            .map_err(|e| format!("at image view creation: {e}"))?;
                     Ok(Image2d {
                         image,
                         format: surface_format.format,
                         extent: surface_resolution,
                         is_swapchain_image: true,
                         painter: painter.clone(),
-                        image_view
+                        image_view,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            command_buffer.begin(true).map_err(|e| format!("at command buffer begin: {e}"))?;
+            command_buffer
+                .begin(true)
+                .map_err(|e| format!("at command buffer begin: {e}"))?;
 
             painter.device.cmd_pipeline_barrier(
                 command_buffer.command_buffer,
@@ -116,21 +134,32 @@ impl Sheets {
                 vk::DependencyFlags::BY_REGION,
                 &[],
                 &[],
-                &swapchain_images.iter().map(|image| vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::empty())
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                    .image(image.image)
-                    .subresource_range(image.get_subresource_range())
-                ).collect::<Vec<_>>(),
+                &swapchain_images
+                    .iter()
+                    .map(|image| {
+                        vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::empty())
+                            .dst_access_mask(vk::AccessFlags::empty())
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                            .image(image.image)
+                            .subresource_range(image.get_subresource_range())
+                    })
+                    .collect::<Vec<_>>(),
             );
-            command_buffer.end().map_err(|e| format!("at command buffer end: {e}"))?;
+            command_buffer
+                .end()
+                .map_err(|e| format!("at command buffer end: {e}"))?;
 
-            let fence = CpuFuture::new(painter.clone(), false).map_err(|e| format!("at fence creation: {e}"))?;
-            command_buffer.submit(&[], &[], &[], Some(&fence)).map_err(|e| format!("at command buffer submit: {e}"))?;
+            let fence = CpuFuture::new(painter.clone(), false)
+                .map_err(|e| format!("at fence creation: {e}"))?;
+            command_buffer
+                .submit(&[], &[], &[], Some(&fence))
+                .map_err(|e| format!("at command buffer submit: {e}"))?;
             fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
-            command_buffer.reset().map_err(|e| format!("at command buffer reset: {e}"))?;
+            command_buffer
+                .reset()
+                .map_err(|e| format!("at command buffer reset: {e}"))?;
 
             Ok(Self {
                 swapchain_images,
@@ -149,7 +178,10 @@ impl Sheets {
             let surface_caps = self
                 .painter
                 .surface_instance
-                .get_physical_device_surface_capabilities(self.painter.physical_device, self.painter.surface)
+                .get_physical_device_surface_capabilities(
+                    self.painter.physical_device,
+                    self.painter.surface,
+                )
                 .map_err(|e| format!("at surface capabilities: {e}"))?;
 
             let new_resolution = surface_caps.current_extent;
@@ -190,15 +222,19 @@ impl Sheets {
                 .map_err(|e| format!("at fetching swapchain images: {e}"))?
                 .into_iter()
                 .map(|image| {
-                    let image_view = Image2d::create_image_view(&self.painter, image, self.surface_format.format)
-                        .map_err(|e| format!("at image view creation: {e}"))?;
+                    let image_view = Image2d::create_image_view(
+                        &self.painter,
+                        image,
+                        self.surface_format.format,
+                    )
+                    .map_err(|e| format!("at image view creation: {e}"))?;
                     Ok(Image2d {
                         image_view,
                         image,
                         format: self.surface_format.format,
                         extent: new_resolution,
                         is_swapchain_image: true,
-                        painter: self.painter.clone()
+                        painter: self.painter.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -206,29 +242,33 @@ impl Sheets {
             self.swapchain = new_swapchain;
             self.swapchain_images = new_swapchain_images;
 
-            self.swapchain_device
-                .destroy_swapchain(old_swapchain, None);
+            self.swapchain_device.destroy_swapchain(old_swapchain, None);
 
             self.surface_resolution = surface_caps.current_extent;
             Ok(())
         }
     }
 
-    pub fn acquire_next_image(&mut self, semaphore: Option<&GpuFuture>, fence: Option<&CpuFuture>) -> Result<u32, String> {
+    pub fn acquire_next_image(
+        &mut self,
+        semaphore: Option<&GpuFuture>,
+        fence: Option<&CpuFuture>,
+    ) -> Result<u32, String> {
         unsafe {
             let vk_fence = fence.map_or(vk::Fence::null(), |fence| fence.fence);
-            let vk_semaphore = semaphore.map_or(vk::Semaphore::null(), |semaphore| semaphore.semaphore);
+            let vk_semaphore =
+                semaphore.map_or(vk::Semaphore::null(), |semaphore| semaphore.semaphore);
             if vk_fence == vk::Fence::null() && vk_semaphore == vk::Semaphore::null() {
                 return Err("either fence or semaphore must be provided".to_string());
             }
             loop {
-                let (img_id, refresh_needed) = self.swapchain_device
+                let (img_id, refresh_needed) = self
+                    .swapchain_device
                     .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence)
                     .map_err(|e| format!("at acquire next image: {e}"))?;
 
                 if refresh_needed {
-                    self
-                        .refresh_resolution()
+                    self.refresh_resolution()
                         .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
                 } else {
                     return Ok(img_id);
@@ -237,14 +277,24 @@ impl Sheets {
         }
     }
 
-    pub fn present_image(&self, image_index: u32, wait_semaphores: &[&GpuFuture]) -> Result<(), String> {
+    pub fn present_image(
+        &self,
+        image_index: u32,
+        wait_semaphores: &[&GpuFuture],
+    ) -> Result<(), String> {
         unsafe {
-            let wait_semaphores = wait_semaphores.iter().map(|semaphore| semaphore.semaphore).collect::<Vec<_>>();
+            let wait_semaphores = wait_semaphores
+                .iter()
+                .map(|semaphore| semaphore.semaphore)
+                .collect::<Vec<_>>();
             self.swapchain_device
-                .queue_present(self.painter.graphics_queue, &vk::PresentInfoKHR::default()
-                    .wait_semaphores(&wait_semaphores)
-                    .swapchains(&[self.swapchain])
-                    .image_indices(&[image_index]))
+                .queue_present(
+                    self.painter.graphics_queue,
+                    &vk::PresentInfoKHR::default()
+                        .wait_semaphores(&wait_semaphores)
+                        .swapchains(&[self.swapchain])
+                        .image_indices(&[image_index]),
+                )
                 .map_err(|e| format!("at present image: {e}"))?;
         }
         Ok(())

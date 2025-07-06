@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk::{self, Handle};
 use hashbrown::HashMap;
 
-use crate::{image::is_format_depth, Image2d, ImageAccess, Painter};
+use crate::{Image2d, ImageAccess, Painter, image::is_format_depth};
 
 pub struct Allocator {
     painter: Arc<Painter>,
@@ -133,7 +133,14 @@ impl Allocator {
             self.image_allocations.insert(image, allocation);
             let image_view = Image2d::create_image_view(&self.painter, image, format)
                 .map_err(|e| format!("at image view creation: {e}"))?;
-            let image2d = Image2d { image, painter: self.painter.clone(), image_view, format, extent, is_swapchain_image: false };
+            let image2d = Image2d {
+                image,
+                painter: self.painter.clone(),
+                image_view,
+                format,
+                extent,
+                is_swapchain_image: false,
+            };
             Ok(image2d)
         }
     }

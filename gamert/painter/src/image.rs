@@ -29,7 +29,7 @@ pub fn get_image_aspect(format: vk::Format) -> vk::ImageAspectFlags {
         if has_stencil_component(format) {
             vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
         } else {
-        vk::ImageAspectFlags::DEPTH
+            vk::ImageAspectFlags::DEPTH
         }
     } else {
         vk::ImageAspectFlags::COLOR
@@ -53,11 +53,14 @@ impl ImageAccess {
             ImageAccess::TransferRead => vk::AccessFlags::TRANSFER_READ,
             ImageAccess::TransferWrite => vk::AccessFlags::TRANSFER_WRITE,
             ImageAccess::ShaderRead => vk::AccessFlags::SHADER_READ,
-            ImageAccess::PipelineAttachment => if is_depth_format {
-                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
-            } else {
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-            },
+            ImageAccess::PipelineAttachment => {
+                if is_depth_format {
+                    vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                } else {
+                    vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                }
+            }
             ImageAccess::Present => vk::AccessFlags::MEMORY_READ,
         }
     }
@@ -68,11 +71,13 @@ impl ImageAccess {
             ImageAccess::TransferRead => vk::ImageUsageFlags::TRANSFER_SRC,
             ImageAccess::TransferWrite => vk::ImageUsageFlags::TRANSFER_DST,
             ImageAccess::ShaderRead => vk::ImageUsageFlags::SAMPLED,
-            ImageAccess::PipelineAttachment => if is_depth_format {
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-            } else {
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE
-            },
+            ImageAccess::PipelineAttachment => {
+                if is_depth_format {
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                } else {
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE
+                }
+            }
             ImageAccess::Present => vk::ImageUsageFlags::empty(),
         }
     }
@@ -83,11 +88,13 @@ impl ImageAccess {
             ImageAccess::TransferRead => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
             ImageAccess::TransferWrite => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             ImageAccess::ShaderRead => vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            ImageAccess::PipelineAttachment => if is_depth_format {
-                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-            } else {
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-            },
+            ImageAccess::PipelineAttachment => {
+                if is_depth_format {
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                } else {
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                }
+            }
             ImageAccess::Present => vk::ImageLayout::PRESENT_SRC_KHR,
         }
     }
@@ -104,7 +111,7 @@ impl ImageAccess {
     }
 }
 
-pub struct Image2d{
+pub struct Image2d {
     pub image_view: vk::ImageView,
     pub image: vk::Image,
     pub format: vk::Format,
@@ -141,25 +148,40 @@ impl Image2d {
 
     pub fn get_full_size_offset(&self) -> [vk::Offset3D; 2] {
         [
-            vk::Offset3D {x: 0, y: 0, z: 0},
-            vk::Offset3D {x: self.extent.width as _, y: self.extent.height as _, z: 1},
+            vk::Offset3D { x: 0, y: 0, z: 0 },
+            vk::Offset3D {
+                x: self.extent.width as _,
+                y: self.extent.height as _,
+                z: 1,
+            },
         ]
     }
 
     pub fn extent3d(&self) -> vk::Extent3D {
-        vk::Extent3D{width: self.extent.width, height: self.extent.height, depth: 1}
+        vk::Extent3D {
+            width: self.extent.width,
+            height: self.extent.height,
+            depth: 1,
+        }
     }
 
-    pub fn create_image_view(painter: &Painter, image: vk::Image, format: vk::Format) -> Result<vk::ImageView, String> {
+    pub fn create_image_view(
+        painter: &Painter,
+        image: vk::Image,
+        format: vk::Format,
+    ) -> Result<vk::ImageView, String> {
         unsafe {
-            painter.device.create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(format)
-                    .subresource_range(Self::make_subresource_range(format)),
-                None,
-            ).map_err(|e| format!("at image view creation: {e}"))
+            painter
+                .device
+                .create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(format)
+                        .subresource_range(Self::make_subresource_range(format)),
+                    None,
+                )
+                .map_err(|e| format!("at image view creation: {e}"))
         }
     }
 }
@@ -167,7 +189,9 @@ impl Image2d {
 impl Drop for Image2d {
     fn drop(&mut self) {
         unsafe {
-            self.painter.device.destroy_image_view(self.image_view, None);
+            self.painter
+                .device
+                .destroy_image_view(self.image_view, None);
 
             if !self.is_swapchain_image {
                 self.painter.device.destroy_image(self.image, None);

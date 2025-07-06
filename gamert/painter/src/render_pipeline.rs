@@ -37,16 +37,15 @@ impl SingePassRenderPipeline {
                     .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             })
             .collect::<Vec<_>>();
-        let depth_attachment = depth_attachment
-            .map(|(format, load_op, store_op)| {
-                vk::AttachmentDescription::default()
-                    .format(format)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .load_op(load_op)
-                    .store_op(store_op)
-                    .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                    .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            });
+        let depth_attachment = depth_attachment.map(|(format, load_op, store_op)| {
+            vk::AttachmentDescription::default()
+                .format(format)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(load_op)
+                .store_op(store_op)
+                .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        });
         let all_attchments = if let Some(depth_attachment) = depth_attachment.clone() {
             let mut a = color_attachments.clone();
             a.append(&mut vec![depth_attachment]);
@@ -55,12 +54,17 @@ impl SingePassRenderPipeline {
             color_attachments.clone()
         };
         let subpass_color_attachments = (0..color_attachments.len())
-            .map(|i| vk::AttachmentReference::default().layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL).attachment(i as _))
+            .map(|i| {
+                vk::AttachmentReference::default()
+                    .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .attachment(i as _)
+            })
             .collect::<Vec<_>>();
-        let subpass_depth_attachment = depth_attachment
-            .map(|_| {
-                vk::AttachmentReference::default().layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL).attachment(color_attachments.len() as _)
-            });
+        let subpass_depth_attachment = depth_attachment.map(|_| {
+            vk::AttachmentReference::default()
+                .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .attachment(color_attachments.len() as _)
+        });
         let mut subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&subpass_color_attachments);
@@ -77,9 +81,9 @@ impl SingePassRenderPipeline {
             .subpasses(&subpass);
         let render_pass = unsafe {
             painter
-            .device
-            .create_render_pass(&render_pass_create_info, None)
-            .map_err(|e| format!("at render pass creation: {e}"))?
+                .device
+                .create_render_pass(&render_pass_create_info, None)
+                .map_err(|e| format!("at render pass creation: {e}"))?
         };
 
         let shader_input_layouts = input_layouts
@@ -104,7 +108,8 @@ impl SingePassRenderPipeline {
             .set_layouts(&set_layouts)
             .push_constant_ranges(&pc_ranges);
         let pipeline_layout = unsafe {
-            painter.device
+            painter
+                .device
                 .create_pipeline_layout(&pipeline_layout_info, None)
                 .map_err(|e| format!("at pipeline layout creation: {e}"))?
         };
@@ -165,21 +170,21 @@ impl SingePassRenderPipeline {
                 .dynamic_state(&dynamic_state);
             painter
                 .device
-                .create_graphics_pipelines(
-                    vk::PipelineCache::null(),
-                    &[pipeline_create_info],
-                    None,
-                )
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None)
                 .map_err(|(_, e)| format!("at pipeline creation: {e}"))?
                 .swap_remove(0)
         };
-        Ok(Self { render_pass, shader_input_layouts, push_constant_size, pipeline_layout, pipeline, painter })
+        Ok(Self {
+            render_pass,
+            shader_input_layouts,
+            push_constant_size,
+            pipeline_layout,
+            pipeline,
+            painter,
+        })
     }
 
-    pub fn create_render_output(
-        &self,
-        attachments: Vec<&Image2d>,
-    ) -> Result<RenderOutput, String> {
+    pub fn create_render_output(&self, attachments: Vec<&Image2d>) -> Result<RenderOutput, String> {
         unsafe {
             let attachment_views = attachments
                 .iter()
@@ -196,7 +201,12 @@ impl SingePassRenderPipeline {
                 .device
                 .create_framebuffer(&framebuffer_create_info, None)
                 .map_err(|e| format!("at framebuffer creation: {e}"))?;
-            Ok(RenderOutput { extent: attachments[0].extent, render_pass: self.render_pass ,framebuffer, painter: self.painter.clone() })
+            Ok(RenderOutput {
+                extent: attachments[0].extent,
+                render_pass: self.render_pass,
+                framebuffer,
+                painter: self.painter.clone(),
+            })
         }
     }
 }
@@ -205,8 +215,12 @@ impl Drop for SingePassRenderPipeline {
     fn drop(&mut self) {
         unsafe {
             self.painter.device.destroy_pipeline(self.pipeline, None);
-            self.painter.device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.painter.device.destroy_render_pass(self.render_pass, None);
+            self.painter
+                .device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.painter
+                .device
+                .destroy_render_pass(self.render_pass, None);
         }
     }
 }
@@ -221,7 +235,9 @@ pub struct RenderOutput {
 impl Drop for RenderOutput {
     fn drop(&mut self) {
         unsafe {
-            self.painter.device.destroy_framebuffer(self.framebuffer, None);
+            self.painter
+                .device
+                .destroy_framebuffer(self.framebuffer, None);
         }
     }
 }

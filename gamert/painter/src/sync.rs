@@ -28,16 +28,19 @@ impl CpuFuture {
     pub fn wait(&self) -> Result<(), String> {
         unsafe {
             self.painter
-            .device
-            .wait_for_fences(&[self.fence], true, u64::MAX)
-            .map_err(|e| format!("at fence wait: {e}"))?;
+                .device
+                .wait_for_fences(&[self.fence], true, u64::MAX)
+                .map_err(|e| format!("at fence wait: {e}"))?;
         }
         Ok(())
     }
 
     pub fn reset(&self) -> Result<(), String> {
         unsafe {
-            self.painter.device.reset_fences(&[self.fence]).map_err(|e| format!("at fence reset: {e}"))?;
+            self.painter
+                .device
+                .reset_fences(&[self.fence])
+                .map_err(|e| format!("at fence reset: {e}"))?;
         }
         Ok(())
     }
