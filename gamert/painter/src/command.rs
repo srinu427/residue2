@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk;
 use hashbrown::HashMap;
 
-use crate::{CpuFuture, GpuFuture, Image2d, ImageAccess, Painter, image::is_format_depth};
+use crate::{image::is_format_depth, Buffer, CpuFuture, GpuFuture, Image2d, ImageAccess, Painter, RenderOutput};
 
 pub struct ImageTransitionInfo<'a> {
     pub image: &'a Image2d,
@@ -11,7 +11,7 @@ pub struct ImageTransitionInfo<'a> {
     pub new_access: Option<ImageAccess>,
 }
 
-pub enum GpuRenderPassCommand {
+pub enum GpuRenderPassCommand<'a> {
     BindPipeline {
         pipeline: usize,
     },
@@ -20,10 +20,10 @@ pub enum GpuRenderPassCommand {
         descriptor_sets: Vec<vk::DescriptorSet>,
     },
     BindVertexBuffers {
-        buffers: Vec<vk::Buffer>,
+        buffers: Vec<&'a Buffer>,
     },
     BindIndexBuffer {
-        buffer: vk::Buffer,
+        buffer: &'a Buffer,
     },
     SetPushConstant {
         pipeline_layout: usize,
@@ -51,15 +51,14 @@ pub enum GpuCommand<'a> {
     },
     RunRenderPass {
         render_pass: vk::RenderPass,
-        framebuffer: vk::Framebuffer,
-        extent: vk::Extent2D,
+        render_output: &'a RenderOutput,
         clear_values: Vec<vk::ClearValue>,
         pipelines: Vec<vk::Pipeline>,
         pipeline_layouts: Vec<vk::PipelineLayout>,
-        commands: Vec<GpuRenderPassCommand>,
+        commands: Vec<GpuRenderPassCommand<'a>>,
     },
     CopyBufferToImageComplete {
-        buffer: vk::Buffer,
+        buffer: &'a Buffer,
         image: &'a Image2d,
     },
 }
@@ -91,8 +90,7 @@ impl<'a> GpuCommand<'a> {
             ],
             Self::RunRenderPass {
                 render_pass: _,
-                framebuffer: _,
-                extent: _,
+                render_output: _,
                 clear_values: _,
                 pipelines: _,
                 pipeline_layouts: _,
@@ -264,8 +262,8 @@ impl CommandBuffer {
                     );
                 }
                 match command {
-                    GpuCommand::ImageAccessInit { image, access } => {}
-                    GpuCommand::ImageAccessHint { image, access } => {}
+                    GpuCommand::ImageAccessInit { image: _, access: _ } => {}
+                    GpuCommand::ImageAccessHint { image: _, access: _ } => {}
                     GpuCommand::BlitFullImage { src, dst } => {
                         self.painter.device.cmd_blit_image(
                             self.command_buffer,
@@ -283,8 +281,7 @@ impl CommandBuffer {
                     }
                     GpuCommand::RunRenderPass {
                         render_pass,
-                        framebuffer,
-                        extent,
+                        render_output,
                         clear_values,
                         pipelines,
                         pipeline_layouts,
@@ -294,8 +291,8 @@ impl CommandBuffer {
                             self.command_buffer,
                             &vk::RenderPassBeginInfo::default()
                                 .render_pass(*render_pass)
-                                .framebuffer(*framebuffer)
-                                .render_area(vk::Rect2D::default().extent(*extent))
+                                .framebuffer(render_output.framebuffer)
+                                .render_area(vk::Rect2D::default().extent(render_output.extent))
                                 .clear_values(clear_values),
                             vk::SubpassContents::INLINE,
                         );
@@ -303,13 +300,13 @@ impl CommandBuffer {
                             self.command_buffer,
                             0,
                             &[vk::Viewport::default()
-                                .width(extent.width as f32)
-                                .height(extent.height as f32)],
+                                .width(render_output.extent.width as f32)
+                                .height(render_output.extent.height as f32)],
                         );
                         self.painter.device.cmd_set_scissor(
                             self.command_buffer,
                             0,
-                            &[vk::Rect2D::default().extent(*extent)],
+                            &[vk::Rect2D::default().extent(render_output.extent)],
                         );
 
                         for rp_command in rp_commands.iter() {
@@ -335,17 +332,22 @@ impl CommandBuffer {
                                     );
                                 }
                                 GpuRenderPassCommand::BindVertexBuffers { buffers } => {
+                                    let buffers = buffers
+                                        .iter()
+                                        .map(|buffer| buffer.buffer)
+                                        .collect::<Vec<_>>();
+                                    let offsets = vec![0; buffers.len()];
                                     self.painter.device.cmd_bind_vertex_buffers(
                                         self.command_buffer,
                                         0,
-                                        buffers,
-                                        &[0],
+                                        &buffers,
+                                        &offsets,
                                     );
                                 }
                                 GpuRenderPassCommand::BindIndexBuffer { buffer } => {
                                     self.painter.device.cmd_bind_index_buffer(
                                         self.command_buffer,
-                                        *buffer,
+                                        buffer.buffer,
                                         0,
                                         vk::IndexType::UINT32,
                                     );
@@ -384,7 +386,7 @@ impl CommandBuffer {
                     GpuCommand::CopyBufferToImageComplete { buffer, image } => {
                         self.painter.device.cmd_copy_buffer_to_image(
                             self.command_buffer,
-                            *buffer,
+                            buffer.buffer,
                             image.image,
                             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                             &[vk::BufferImageCopy::default()

@@ -4,6 +4,8 @@ use ash::vk;
 
 use crate::{Image2d, Painter, ShaderInputBindingInfo, ShaderInputLayout, ShaderModule};
 
+
+
 pub struct SingePassRenderPipeline {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -226,7 +228,7 @@ impl Drop for SingePassRenderPipeline {
 }
 
 pub struct RenderOutput {
-    extent: vk::Extent2D,
+    pub extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     pub framebuffer: vk::Framebuffer,
     painter: Arc<Painter>,

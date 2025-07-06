@@ -64,12 +64,12 @@ impl Canvas {
         let command_pool = CommandPool::new(painter.clone())
             .map_err(|e| format!("at create command pool: {e}"))?;
 
-        let upload_command_buffer = command_pool
+        let mut upload_command_buffer = command_pool
             .allocate_command_buffers(1)
             .map_err(|e| format!("at allocate upload command buffer: {e}"))?
             .swap_remove(0);
 
-        let sheets = Sheets::new(painter.clone(), &upload_command_buffer)?;
+        let sheets = Sheets::new(painter.clone(), &mut upload_command_buffer)?;
 
         let mut mesh_painter = MeshPainter::new(
             painter.clone(),
@@ -123,7 +123,7 @@ impl Canvas {
         // Wait till next image is available
         let frame_num = self
             .sheets
-            .acquire_next_image(None, Some(&self.acquire_image_cpu_fut))
+            .acquire_next_image(None, Some(&self.acquire_image_cpu_fut), &mut self.upload_command_buffer)
             .map_err(|e| format!("at acquire next image: {e}"))?;
         self.acquire_image_cpu_fut
             .wait()
@@ -246,76 +246,76 @@ impl ApplicationHandler for Game {
     fn window_event(
         &mut self,
         event_loop: &painter::winit::event_loop::ActiveEventLoop,
-        window_id: painter::winit::window::WindowId,
+        _window_id: painter::winit::window::WindowId,
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::ActivationTokenDone { serial, token } => {}
-            WindowEvent::Resized(physical_size) => {}
-            WindowEvent::Moved(physical_position) => {}
+            WindowEvent::ActivationTokenDone { serial: _, token: _ } => {}
+            WindowEvent::Resized(_physical_size) => {}
+            WindowEvent::Moved(_physical_position) => {}
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::Destroyed => {}
-            WindowEvent::DroppedFile(path_buf) => {}
-            WindowEvent::HoveredFile(path_buf) => {}
+            WindowEvent::DroppedFile(_path_buf) => {}
+            WindowEvent::HoveredFile(_path_buf) => {}
             WindowEvent::HoveredFileCancelled => {}
             WindowEvent::Focused(_) => {}
             WindowEvent::KeyboardInput {
-                device_id,
-                event,
-                is_synthetic,
+                device_id: _,
+                event: _,
+                is_synthetic: _,
             } => {}
-            WindowEvent::ModifiersChanged(modifiers) => {}
-            WindowEvent::Ime(ime) => {}
+            WindowEvent::ModifiersChanged(_modifiers) => {}
+            WindowEvent::Ime(_ime) => {}
             WindowEvent::CursorMoved {
-                device_id,
-                position,
+                device_id: _,
+                position: _,
             } => {}
-            WindowEvent::CursorEntered { device_id } => {}
-            WindowEvent::CursorLeft { device_id } => {}
+            WindowEvent::CursorEntered { device_id: _ } => {}
+            WindowEvent::CursorLeft { device_id: _ } => {}
             WindowEvent::MouseWheel {
-                device_id,
-                delta,
-                phase,
+                device_id: _,
+                delta: _,
+                phase: _,
             } => {}
             WindowEvent::MouseInput {
-                device_id,
-                state,
-                button,
+                device_id: _,
+                state: _,
+                button: _,
             } => {}
             WindowEvent::PinchGesture {
-                device_id,
-                delta,
-                phase,
+                device_id: _,
+                delta: _,
+                phase: _,
             } => {}
             WindowEvent::PanGesture {
-                device_id,
-                delta,
-                phase,
+                device_id: _,
+                delta: _,
+                phase: _,
             } => {}
-            WindowEvent::DoubleTapGesture { device_id } => {}
+            WindowEvent::DoubleTapGesture { device_id: _ } => {}
             WindowEvent::RotationGesture {
-                device_id,
-                delta,
-                phase,
+                device_id: _,
+                delta: _,
+                phase: _,
             } => {}
             WindowEvent::TouchpadPressure {
-                device_id,
-                pressure,
-                stage,
+                device_id: _,
+                pressure: _,
+                stage: _,
             } => {}
             WindowEvent::AxisMotion {
-                device_id,
-                axis,
-                value,
+                device_id: _,
+                axis: _,
+                value: _,
             } => {}
-            WindowEvent::Touch(touch) => {}
+            WindowEvent::Touch(_touch) => {}
             WindowEvent::ScaleFactorChanged {
-                scale_factor,
-                inner_size_writer,
+                scale_factor: _,
+                inner_size_writer: _,
             } => {}
-            WindowEvent::ThemeChanged(theme) => {}
+            WindowEvent::ThemeChanged(_theme) => {}
             WindowEvent::Occluded(_) => {}
             WindowEvent::RedrawRequested => {
                 self.canvas
@@ -325,7 +325,7 @@ impl ApplicationHandler for Game {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &event_loop::ActiveEventLoop) {
+    fn about_to_wait(&mut self, _event_loop: &event_loop::ActiveEventLoop) {
         self.canvas
             .as_mut()
             .map(|c| c.paint().inspect_err(|e| eprintln!("at paint: {e}")));

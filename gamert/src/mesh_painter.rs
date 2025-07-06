@@ -4,10 +4,7 @@ use ash::vk;
 use glam::Vec4Swizzles;
 use include_bytes_aligned::include_bytes_aligned;
 use painter::{
-    Allocator, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d,
-    ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo,
-    ShaderInputLayout, ShaderInputType, SingePassRenderPipeline, ash,
-    slotmap::{SlotMap, new_key_type},
+    ash, slotmap::{new_key_type, SlotMap}, Allocator, Buffer, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputType, SingePassRenderPipeline
 };
 
 static VERTEX_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.vert.spv");
@@ -46,10 +43,10 @@ pub struct PerFrameData {
     scene_descriptor_set: vk::DescriptorSet,
     texture_descriptor_set: vk::DescriptorSet,
     next_draw_params: Vec<ObjDrawParams>,
-    vertex_buffer: vk::Buffer,
-    index_buffer: vk::Buffer,
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
     index_buffer_size: u32,
-    scene_buffer: vk::Buffer,
+    scene_buffer: Buffer,
     color_image: Image2d,
     depth_image: Image2d,
     render_output: RenderOutput,
@@ -154,18 +151,13 @@ impl PerFrameData {
         })
     }
 
-    pub fn cleanup(&self, device: &ash::Device, allocator: &mut Allocator) {
-        unsafe {
-            device.destroy_buffer(self.index_buffer, None);
-            device.destroy_buffer(self.vertex_buffer, None);
-            device.destroy_buffer(self.scene_buffer, None);
-            let _ = allocator
-                .delete_allocations(
-                    &[self.vertex_buffer, self.index_buffer],
-                    &[&self.color_image, &self.depth_image],
-                )
-                .inspect_err(|e| eprintln!("at delete allocations: {e}"));
-        }
+    pub fn cleanup(&self, allocator: &mut Allocator) {
+        let _ = allocator
+            .delete_allocations(
+                &[&self.vertex_buffer, &self.index_buffer, &self.scene_buffer],
+                &[&self.color_image, &self.depth_image],
+            )
+            .inspect_err(|e| eprintln!("at delete allocations: {e}"));
     }
 }
 
@@ -434,7 +426,7 @@ impl MeshPainter {
             )
             .map_err(|e| format!("at create stage buffer: {e}"))?;
         self.allocator
-            .write_to_buffer_mem(stage_buffer, &image_data)
+            .write_to_buffer_mem(&stage_buffer, &image_data)
             .map_err(|e| format!("at write to staging buffer mem: {e}"))?;
 
         let commands = vec![
@@ -443,7 +435,7 @@ impl MeshPainter {
                 access: ImageAccess::TransferWrite,
             },
             GpuCommand::CopyBufferToImageComplete {
-                buffer: stage_buffer,
+                buffer: &stage_buffer,
                 image: &vk_image,
             },
             GpuCommand::ImageAccessHint {
@@ -465,11 +457,8 @@ impl MeshPainter {
             .map_err(|e| format!("at texture upload fence wait: {e}"))?;
 
         self.allocator
-            .delete_allocations(&[stage_buffer], &[])
+            .delete_allocations(&[&stage_buffer], &[])
             .map_err(|e| format!("at delete allocations: {e}"))?;
-        unsafe {
-            self.painter.device.destroy_buffer(stage_buffer, None);
-        }
 
         let texture_id = self.textures.insert(vk_image);
         Ok(texture_id)
@@ -531,11 +520,12 @@ impl MeshPainter {
         }
 
         let norm_frame_number = frame_number % self.per_frame_datas.len();
-        let vb = self.per_frame_datas[norm_frame_number].vertex_buffer;
-        let ib = self.per_frame_datas[norm_frame_number].index_buffer;
-        let sb = self.per_frame_datas[norm_frame_number].scene_buffer;
         self.per_frame_datas[norm_frame_number].index_buffer_size = ib_data.len() as u32;
         self.per_frame_datas[norm_frame_number].next_draw_params = objects;
+
+        let vb = &self.per_frame_datas[norm_frame_number].vertex_buffer;
+        let ib = &self.per_frame_datas[norm_frame_number].index_buffer;
+        let sb = &self.per_frame_datas[norm_frame_number].scene_buffer;
 
         unsafe {
             let scene_data = SceneDescriptorData { cam_data: camera };
@@ -560,7 +550,7 @@ impl MeshPainter {
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .descriptor_count(1)
                         .buffer_info(&[vk::DescriptorBufferInfo::default()
-                            .buffer(sb)
+                            .buffer(sb.buffer)
                             .range(vk::WHOLE_SIZE)]),
                     vk::WriteDescriptorSet::default()
                         .dst_set(texture_dset)
@@ -598,10 +588,10 @@ impl MeshPainter {
         let mut render_cmds = vec![];
         render_cmds.push(GpuRenderPassCommand::BindPipeline { pipeline: 0 });
         render_cmds.push(GpuRenderPassCommand::BindVertexBuffers {
-            buffers: vec![per_frame_data.vertex_buffer],
+            buffers: vec![&per_frame_data.vertex_buffer],
         });
         render_cmds.push(GpuRenderPassCommand::BindIndexBuffer {
-            buffer: per_frame_data.index_buffer,
+            buffer: &per_frame_data.index_buffer,
         });
         render_cmds.push(GpuRenderPassCommand::BindShaderInput {
             pipeline_layout: 0,
@@ -625,8 +615,7 @@ impl MeshPainter {
         }
         let gpu_command = GpuCommand::RunRenderPass {
             render_pass: self.pipeline.render_pass,
-            framebuffer: per_frame_data.render_output.framebuffer,
-            extent: per_frame_data.color_image.extent,
+            render_output: &per_frame_data.render_output,
             clear_values: vec![
                 vk::ClearValue {
                     color: vk::ClearColorValue {
@@ -654,7 +643,7 @@ impl Drop for MeshPainter {
         self.textures_to_delete.clear();
         self.textures.clear();
         for per_frame_data in self.per_frame_datas.drain(..) {
-            per_frame_data.cleanup(device, &mut self.allocator);
+            per_frame_data.cleanup(&mut self.allocator);
         }
         unsafe {
             device.destroy_sampler(self.sampler, None);

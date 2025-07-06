@@ -8,6 +8,7 @@ pub use slotmap;
 pub use winit;
 
 mod allocator;
+mod buffer;
 mod command;
 mod image;
 mod painter;
@@ -17,6 +18,7 @@ mod sheets;
 mod sync;
 
 pub use allocator::Allocator;
+pub use buffer::Buffer;
 pub use command::{CommandBuffer, CommandPool, GpuCommand, GpuRenderPassCommand};
 pub use image::{Image2d, ImageAccess};
 pub use painter::Painter;

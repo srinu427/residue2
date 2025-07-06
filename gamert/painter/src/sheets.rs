@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ash::{khr, vk};
 
-use crate::{CommandBuffer, CpuFuture, GpuFuture, Image2d, Painter};
+use crate::{CommandBuffer, CpuFuture, GpuCommand, GpuFuture, Image2d, ImageAccess, Painter};
 
 pub struct Sheets {
     pub swapchain_images: Vec<Image2d>,
@@ -15,7 +15,7 @@ pub struct Sheets {
 }
 
 impl Sheets {
-    pub fn new(painter: Arc<Painter>, command_buffer: &CommandBuffer) -> Result<Self, String> {
+    pub fn new(painter: Arc<Painter>, command_buffer: &mut CommandBuffer) -> Result<Self, String> {
         unsafe {
             // Swapchain creation
             let surface_instance = &painter.surface_instance;
@@ -123,38 +123,12 @@ impl Sheets {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            command_buffer
-                .begin(true)
-                .map_err(|e| format!("at command buffer begin: {e}"))?;
-
-            painter.device.cmd_pipeline_barrier(
-                command_buffer.command_buffer,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::DependencyFlags::BY_REGION,
-                &[],
-                &[],
-                &swapchain_images
-                    .iter()
-                    .map(|image| {
-                        vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(vk::AccessFlags::empty())
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                            .image(image.image)
-                            .subresource_range(image.get_subresource_range())
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            command_buffer
-                .end()
-                .map_err(|e| format!("at command buffer end: {e}"))?;
-
+            let commands = swapchain_images.iter().map(|image| GpuCommand::ImageAccessInit { image: image, access: ImageAccess::Present }).collect::<Vec<_>>();
+            command_buffer.record(&commands, true)
+                .map_err(|e| format!("at command buffer record: {e}"))?;
             let fence = CpuFuture::new(painter.clone(), false)
                 .map_err(|e| format!("at fence creation: {e}"))?;
-            command_buffer
-                .submit(&[], &[], &[], Some(&fence))
+            command_buffer.submit(&[], &[], &[], Some(&fence))
                 .map_err(|e| format!("at command buffer submit: {e}"))?;
             fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
             command_buffer
@@ -173,7 +147,7 @@ impl Sheets {
         }
     }
 
-    pub fn refresh_resolution(&mut self) -> Result<(), String> {
+    pub fn refresh_resolution(&mut self, command_buffer: &mut CommandBuffer) -> Result<(), String> {
         unsafe {
             let surface_caps = self
                 .painter
@@ -239,6 +213,18 @@ impl Sheets {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
+            let commands = new_swapchain_images.iter().map(|image| GpuCommand::ImageAccessInit { image: image, access: ImageAccess::Present }).collect::<Vec<_>>();
+            command_buffer.record(&commands, true)
+                .map_err(|e| format!("at command buffer record: {e}"))?;
+            let fence = CpuFuture::new(self.painter.clone(), false)
+                .map_err(|e| format!("at fence creation: {e}"))?;
+            command_buffer.submit(&[], &[], &[], Some(&fence))
+                .map_err(|e| format!("at command buffer submit: {e}"))?;
+            fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
+            command_buffer
+                .reset()
+                .map_err(|e| format!("at command buffer reset: {e}"))?;
+
             self.swapchain = new_swapchain;
             self.swapchain_images = new_swapchain_images;
 
@@ -253,6 +239,7 @@ impl Sheets {
         &mut self,
         semaphore: Option<&GpuFuture>,
         fence: Option<&CpuFuture>,
+        command_buffer: &mut CommandBuffer
     ) -> Result<u32, String> {
         unsafe {
             let vk_fence = fence.map_or(vk::Fence::null(), |fence| fence.fence);
@@ -262,13 +249,21 @@ impl Sheets {
                 return Err("either fence or semaphore must be provided".to_string());
             }
             loop {
-                let (img_id, refresh_needed) = self
+                let (img_id, refresh_needed) = match self
                     .swapchain_device
-                    .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence)
-                    .map_err(|e| format!("at acquire next image: {e}"))?;
+                    .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence) {
+                        Ok(ok_res) => ok_res,
+                        Err(e) => {
+                            if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                                (0, true)
+                            } else {
+                                Err(format!("at acquiring next image: {e}"))?
+                            }
+                        }
+                    };
 
                 if refresh_needed {
-                    self.refresh_resolution()
+                    self.refresh_resolution(command_buffer)
                         .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
                 } else {
                     return Ok(img_id);
@@ -287,15 +282,21 @@ impl Sheets {
                 .iter()
                 .map(|semaphore| semaphore.semaphore)
                 .collect::<Vec<_>>();
-            self.swapchain_device
+            match self.swapchain_device
                 .queue_present(
                     self.painter.graphics_queue,
                     &vk::PresentInfoKHR::default()
                         .wait_semaphores(&wait_semaphores)
                         .swapchains(&[self.swapchain])
                         .image_indices(&[image_index]),
-                )
-                .map_err(|e| format!("at present image: {e}"))?;
+                ) {
+                Ok(_) => {}
+                Err(e) => {
+                    if e != vk::Result::ERROR_OUT_OF_DATE_KHR {
+                        return Err(format!("at presenting image: {e}"));
+                    }
+                }
+            }
         }
         Ok(())
     }

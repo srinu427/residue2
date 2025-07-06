@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ash::vk::{self, Handle};
 use hashbrown::HashMap;
 
-use crate::{Image2d, ImageAccess, Painter, image::is_format_depth};
+use crate::{image::is_format_depth, Buffer, Image2d, ImageAccess, Painter};
 
 pub struct Allocator {
     painter: Arc<Painter>,
@@ -28,7 +28,7 @@ impl Allocator {
         size: u64,
         buffer_usage_flags: vk::BufferUsageFlags,
         gpu_local: bool,
-    ) -> Result<vk::Buffer, String> {
+    ) -> Result<Buffer, String> {
         unsafe {
             let buffer = self
                 .painter
@@ -63,14 +63,18 @@ impl Allocator {
                 .map_err(|e| format!("at buffer memory binding: {e}"))?;
 
             self.buffer_allocations.insert(buffer, allocation);
-            Ok(buffer)
+            Ok(Buffer {
+                buffer,
+                size,
+                painter: self.painter.clone(),
+            })
         }
     }
 
-    pub fn write_to_buffer_mem(&mut self, buffer: vk::Buffer, data: &[u8]) -> Result<(), String> {
+    pub fn write_to_buffer_mem(&mut self, buffer: &Buffer, data: &[u8]) -> Result<(), String> {
         let allocation = self
             .buffer_allocations
-            .get_mut(&buffer)
+            .get_mut(&buffer.buffer)
             .ok_or("buffer not found")?;
         let data_ptr = allocation
             .mapped_slice_mut()
@@ -169,11 +173,12 @@ impl Allocator {
 
     pub fn delete_allocations(
         &mut self,
-        buffers: &[vk::Buffer],
+        buffers: &[&Buffer],
         images: &[&Image2d],
     ) -> Result<(), String> {
+        let buffers = buffers.iter().map(|buffer| buffer.buffer).collect::<Vec<_>>();
         let images = images.iter().map(|image| image.image).collect::<Vec<_>>();
-        self.delete_allocations_inner(buffers, &images)
+        self.delete_allocations_inner(&buffers, &images)
             .inspect_err(|e| eprintln!("at buffer and image deallocation: {e}"))
     }
 }
