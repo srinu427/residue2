@@ -252,9 +252,9 @@ impl ApplicationHandler for Game {
         match event {
             WindowEvent::ActivationTokenDone { serial: _, token: _ } => {}
             WindowEvent::Resized(_physical_size) => {
-                // self.canvas
-                //     .as_mut()
-                //     .map(|c| c.paint().inspect_err(|e| eprintln!("at paint: {e}")));
+                self.canvas
+                    .as_mut()
+                    .map(|c| c.paint().inspect_err(|e| eprintln!("at paint: {e}")));
             }
             WindowEvent::Moved(_physical_position) => {}
             WindowEvent::CloseRequested => {
@@ -322,9 +322,9 @@ impl ApplicationHandler for Game {
             WindowEvent::ThemeChanged(_theme) => {}
             WindowEvent::Occluded(_) => {}
             WindowEvent::RedrawRequested => {
-                // self.canvas
-                //     .as_mut()
-                //     .map(|c| c.paint().inspect_err(|e| eprintln!("at paint: {e}")));
+                self.canvas
+                    .as_mut()
+                    .map(|c| c.paint().inspect_err(|e| eprintln!("at paint: {e}")));
             }
         }
     }

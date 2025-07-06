@@ -264,13 +264,15 @@ impl Sheets {
                         }
                     };
                 if refresh_needed {
-                self.refresh_resolution(command_buffer)
-                    .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
-                    fence.as_mut().map(|f| {
-                        f.wait().map_err(|e| format!("at fence wait before refresh: {e}"))?;
-                        f.reset().map_err(|e| format!("at fence reset before refresh: {e}"))?;
-                        Ok::<(), String>(())
-                    }).transpose()?;
+                    self.refresh_resolution(command_buffer)
+                        .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
+                    if img_id.is_some() {
+                        fence.as_mut().map(|f| {
+                            f.wait().map_err(|e| format!("at fence wait before refresh: {e}"))?;
+                            f.reset().map_err(|e| format!("at fence reset before refresh: {e}"))?;
+                            Ok::<(), String>(())
+                        }).transpose()?;
+                    }
                     continue;
                 }
                 if let Some(i_id) = img_id {
