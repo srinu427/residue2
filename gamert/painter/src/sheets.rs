@@ -160,9 +160,11 @@ impl Sheets {
 
             let new_resolution = surface_caps.current_extent;
 
-            if new_resolution == self.surface_resolution {
-                return Ok(());
-            }
+            // Do not compare resolutions to avoid flickering in case of suboptimal swapchain
+            // println!("new resolution: {:?}", new_resolution);
+            // if new_resolution == self.surface_resolution {
+            //     return Ok(false);
+            // }
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
                 .surface(self.painter.surface)
@@ -238,7 +240,7 @@ impl Sheets {
     pub fn acquire_next_image(
         &mut self,
         semaphore: Option<&GpuFuture>,
-        fence: Option<&CpuFuture>,
+        mut fence: Option<&CpuFuture>,
         command_buffer: &mut CommandBuffer
     ) -> Result<u32, String> {
         unsafe {
@@ -252,21 +254,27 @@ impl Sheets {
                 let (img_id, refresh_needed) = match self
                     .swapchain_device
                     .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence) {
-                        Ok(ok_res) => ok_res,
+                        Ok((i_id, ref_needed)) => (Some(i_id), ref_needed),
                         Err(e) => {
                             if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
-                                (0, true)
+                                (None, true)
                             } else {
-                                Err(format!("at acquiring next image: {e}"))?
+                                return Err(format!("at acquiring next image: {e}"))?;
                             }
                         }
                     };
-
                 if refresh_needed {
-                    self.refresh_resolution(command_buffer)
-                        .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
-                } else {
-                    return Ok(img_id);
+                self.refresh_resolution(command_buffer)
+                    .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
+                    fence.as_mut().map(|f| {
+                        f.wait().map_err(|e| format!("at fence wait before refresh: {e}"))?;
+                        f.reset().map_err(|e| format!("at fence reset before refresh: {e}"))?;
+                        Ok::<(), String>(())
+                    }).transpose()?;
+                    continue;
+                }
+                if let Some(i_id) = img_id {
+                    return Ok(i_id)
                 }
             }
         }
@@ -290,15 +298,16 @@ impl Sheets {
                         .swapchains(&[self.swapchain])
                         .image_indices(&[image_index]),
                 ) {
-                Ok(_) => {}
+                Ok(_) => Ok(()),
                 Err(e) => {
                     if e != vk::Result::ERROR_OUT_OF_DATE_KHR {
-                        return Err(format!("at presenting image: {e}"));
+                        Err(format!("at presenting image: {e}"))
+                    } else {
+                        Ok(())
                     }
                 }
             }
         }
-        Ok(())
     }
 }
 
