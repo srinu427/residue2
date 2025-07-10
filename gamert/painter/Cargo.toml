@@ -9,4 +9,5 @@ ash-window = "0.13.0"
 gpu-allocator = "0.27.0"
 hashbrown = "0.15.4"
 slotmap = "1.0.7"
+strum = { version = "0.27.1", features = ["derive"] }
 winit = "0.30.11"

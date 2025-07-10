@@ -44,6 +44,12 @@ impl CpuFuture {
         }
         Ok(())
     }
+
+    pub fn wait_and_reset(&self) -> Result<(), String> {
+        self.wait()?;
+        self.reset()?;
+        Ok(())
+    }
 }
 
 impl Drop for CpuFuture {

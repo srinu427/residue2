@@ -4,7 +4,7 @@ use ash::vk;
 use glam::Vec4Swizzles;
 use include_bytes_aligned::include_bytes_aligned;
 use painter::{
-    ash, slotmap::{new_key_type, SlotMap}, Allocator, Buffer, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderInputType, SingePassRenderPipeline
+    ash, slotmap::{new_key_type, SlotMap}, Allocator, Buffer, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputType, SingePassRenderPipeline
 };
 
 static VERTEX_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.vert.spv");
@@ -40,9 +40,7 @@ pub struct SceneDescriptorData {
 }
 
 pub struct PerFrameData {
-    scene_descriptor_set: vk::DescriptorSet,
-    texture_descriptor_set: vk::DescriptorSet,
-    next_draw_params: Vec<ObjDrawParams>,
+    descriptor_sets: Vec<vk::DescriptorSet>,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     index_buffer_size: u32,
@@ -59,17 +57,12 @@ impl PerFrameData {
         color_format: vk::Format,
         depth_format: vk::Format,
         extent: vk::Extent2D,
-        scene_set_layout: &ShaderInputLayout,
-        texture_set_layout: &ShaderInputLayout,
         shader_input_allocator: &ShaderInputAllocator,
         command_buffer: &mut CommandBuffer,
     ) -> Result<Self, String> {
-        let scene_descriptor_set = shader_input_allocator
-            .allocate(&scene_set_layout)
-            .map_err(|e| format!("at allocate scene descriptor set: {e}"))?;
-        let texture_descriptor_set = shader_input_allocator
-            .allocate(&texture_set_layout)
-            .map_err(|e| format!("at allocate texture descriptor set: {e}"))?;
+        let descriptor_sets = pipeline
+            .make_shader_inputs(shader_input_allocator)
+            .map_err(|e| format!("at make shader inputs: {e}"))?;
         let vertex_buffer = allocator
             .create_buffer(
                 32 * 1024 * 1024,
@@ -138,9 +131,7 @@ impl PerFrameData {
             .map_err(|e| format!("at create render output: {e}"))?;
 
         Ok(Self {
-            scene_descriptor_set,
-            texture_descriptor_set,
-            next_draw_params: vec![],
+            descriptor_sets,
             vertex_buffer,
             index_buffer,
             scene_buffer,
@@ -308,17 +299,19 @@ impl MeshPainter {
                     vk::AttachmentStoreOp::DONT_CARE,
                 )),
                 vec![
-                    vec![ShaderInputBindingInfo {
-                        _type: ShaderInputType::StorageBuffer,
-                        count: 1,
-                        dynamic: false,
-                    }],
                     vec![
+                        ShaderInputBindingInfo {
+                            _type: ShaderInputType::StorageBuffer,
+                            count: 1,
+                            dynamic: false,
+                        },
                         ShaderInputBindingInfo {
                             _type: ShaderInputType::Sampler,
                             count: 1,
                             dynamic: false,
-                        },
+                        },],
+                    vec![
+                        
                         ShaderInputBindingInfo {
                             _type: ShaderInputType::SampledImage2d,
                             count: MAX_TEXTURES as _,
@@ -367,8 +360,6 @@ impl MeshPainter {
                         color_attachment_format,
                         depth_attachment_format,
                         resolution,
-                        &pipeline.shader_input_layouts[0],
-                        &pipeline.shader_input_layouts[1],
                         &shader_input_allocator,
                         &mut command_buffer,
                     )
@@ -539,8 +530,8 @@ impl MeshPainter {
                 .write_to_buffer_mem(ib, ib_data.as_slice().align_to::<u8>().1)
                 .map_err(|e| format!("at write to index buffer mem: {e}"))?;
 
-            let scene_dset = self.per_frame_datas[norm_frame_number].scene_descriptor_set;
-            let texture_dset = self.per_frame_datas[norm_frame_number].texture_descriptor_set;
+            let scene_dset = self.per_frame_datas[norm_frame_number].descriptor_sets[0];
+            let texture_dset = self.per_frame_datas[norm_frame_number].descriptor_sets[1];
 
             self.painter.device.update_descriptor_sets(
                 &[
@@ -553,8 +544,8 @@ impl MeshPainter {
                             .buffer(sb.buffer)
                             .range(vk::WHOLE_SIZE)]),
                     vk::WriteDescriptorSet::default()
-                        .dst_set(texture_dset)
-                        .dst_binding(0)
+                        .dst_set(scene_dset)
+                        .dst_binding(1)
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .descriptor_count(1)
                         .image_info(&[vk::DescriptorImageInfo::default().sampler(self.sampler)]),
@@ -595,10 +586,7 @@ impl MeshPainter {
         });
         render_cmds.push(GpuRenderPassCommand::BindShaderInput {
             pipeline_layout: 0,
-            descriptor_sets: vec![
-                per_frame_data.scene_descriptor_set,
-                per_frame_data.texture_descriptor_set,
-            ],
+            descriptor_sets: per_frame_data.descriptor_sets.clone(),
         });
         for draw_param in &per_frame_data.next_draw_params {
             unsafe {

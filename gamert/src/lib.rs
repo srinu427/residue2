@@ -126,30 +126,24 @@ impl Canvas {
             .acquire_next_image(None, Some(&self.acquire_image_cpu_fut), &mut self.upload_command_buffer)
             .map_err(|e| format!("at acquire next image: {e}"))?;
         self.acquire_image_cpu_fut
-            .wait()
+            .wait_and_reset()
             .map_err(|e| format!("at wait for acquire image future: {e}"))?;
-        self.acquire_image_cpu_fut
-            .reset()
-            .map_err(|e| format!("at reset acquire image future: {e}"))?;
 
         let draw_complete_gpu_fut = &self.draw_complete_gpu_futs[frame_num as usize];
         let draw_complete_cpu_fut = &self.draw_complete_cpu_futs[frame_num as usize];
 
         draw_complete_cpu_fut
-            .wait()
+            .wait_and_reset()
             .map_err(|e| format!("at wait for draw complete cpu future: {e}"))?;
-        draw_complete_cpu_fut
-            .reset()
-            .map_err(|e| format!("at reset draw complete cpu future: {e}"))?;
 
         let cam_data = CamData::new(
             glam::vec4(0.0, 0.0, 1.0, 1.0),
             glam::vec4(0.0, 0.0, 0.0, 0.0),
         );
 
-        self.command_buffers[frame_num as usize]
-            .reset()
-            .map_err(|e| format!("at reset command buffer: {e}"))?;
+        // self.command_buffers[frame_num as usize]
+        //     .reset()
+        //     .map_err(|e| format!("at reset command buffer: {e}"))?;
 
         self.mesh_painter
             .update_inputs(frame_num as usize, &self.drawables, cam_data)

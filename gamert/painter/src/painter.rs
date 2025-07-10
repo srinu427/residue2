@@ -1,8 +1,16 @@
 use ash::{ext, khr, vk};
+use strum::EnumCount;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
+
+static DEPTH_FORMAT_PREFERENCE_LIST: &[vk::Format] = &[
+    vk::Format::D24_UNORM_S8_UINT,
+    vk::Format::D32_SFLOAT,
+    vk::Format::D32_SFLOAT_S8_UINT,
+    vk::Format::D16_UNORM,
+];
 
 pub fn get_instance_layers() -> Vec<*const i8> {
     vec![
@@ -73,7 +81,15 @@ pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
+#[repr(usize)]
+pub enum ImageFormatType {
+    Rgba8Unorm = 0,
+    DepthStencilOptimal = 1,
+}
+
 pub struct Painter {
+    pub image_formats: [vk::Format; ImageFormatType::COUNT],
     pub graphics_queue: vk::Queue,
     pub graphics_queue_family_index: u32,
     pub device: ash::Device,
@@ -191,6 +207,28 @@ impl Painter {
 
             let graphics_queue = device.get_device_queue(graphics_queue_family_index, 0);
 
+            let rgba8_format = vk::Format::R8G8B8A8_UNORM;
+            let depth_format = DEPTH_FORMAT_PREFERENCE_LIST
+                .iter()
+                .find_map(|&format| {
+                    let format_properties = instance.get_physical_device_format_properties(
+                        physical_device,
+                        format,
+                    );
+                    if format_properties.optimal_tiling_features.contains(
+                        vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+                    ) {
+                        Some(format)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("no suitable depth format found".to_string())?;
+            
+            let mut image_formats = [vk::Format::UNDEFINED; ImageFormatType::COUNT];
+            image_formats[ImageFormatType::Rgba8Unorm as usize] = rgba8_format;
+            image_formats[ImageFormatType::DepthStencilOptimal as usize] = depth_format;
+
             Ok(Self {
                 instance,
                 entry,
@@ -201,6 +239,7 @@ impl Painter {
                 graphics_queue,
                 graphics_queue_family_index,
                 physical_device,
+                image_formats,
             })
         }
     }
