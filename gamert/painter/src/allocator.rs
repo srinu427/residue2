@@ -1,15 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ash::vk::{self, Handle};
-use hashbrown::HashMap;
 
 use crate::{image::is_format_depth, Buffer, Image2d, ImageAccess, Painter};
 
 pub struct Allocator {
     painter: Arc<Painter>,
-    allocator: gpu_allocator::vulkan::Allocator,
-    buffer_allocations: HashMap<vk::Buffer, gpu_allocator::vulkan::Allocation>,
-    image_allocations: HashMap<vk::Image, gpu_allocator::vulkan::Allocation>,
+    pub(crate) allocator: gpu_allocator::vulkan::Allocator,
+    pub(crate) to_be_deleted: Arc<Mutex<Vec<gpu_allocator::vulkan::Allocation>>>
 }
 
 impl Allocator {
@@ -18,69 +16,8 @@ impl Allocator {
         Ok(Self {
             painter,
             allocator,
-            buffer_allocations: HashMap::new(),
-            image_allocations: HashMap::new(),
+            to_be_deleted: Arc::new(Mutex::new(Vec::new())),
         })
-    }
-
-    pub fn create_buffer(
-        &mut self,
-        size: u64,
-        buffer_usage_flags: vk::BufferUsageFlags,
-        gpu_local: bool,
-    ) -> Result<Buffer, String> {
-        unsafe {
-            let buffer = self
-                .painter
-                .device
-                .create_buffer(
-                    &vk::BufferCreateInfo::default()
-                        .usage(buffer_usage_flags)
-                        .size(size),
-                    None,
-                )
-                .map_err(|e| format!("at buffer creation: {e}"))?;
-            let requirements = self.painter.device.get_buffer_memory_requirements(buffer);
-            let mem_location = if gpu_local {
-                gpu_allocator::MemoryLocation::GpuOnly
-            } else {
-                gpu_allocator::MemoryLocation::CpuToGpu
-            };
-            let allocation = self
-                .allocator
-                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                    name: &format!("{:x}", buffer.as_raw()),
-                    requirements,
-                    location: mem_location,
-                    linear: false,
-                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                })
-                .map_err(|e| format!("at buffer allocation: {e}"))?;
-
-            self.painter
-                .device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .map_err(|e| format!("at buffer memory binding: {e}"))?;
-
-            self.buffer_allocations.insert(buffer, allocation);
-            Ok(Buffer {
-                buffer,
-                size,
-                painter: self.painter.clone(),
-            })
-        }
-    }
-
-    pub fn write_to_buffer_mem(&mut self, buffer: &Buffer, data: &[u8]) -> Result<(), String> {
-        let allocation = self
-            .buffer_allocations
-            .get_mut(&buffer.buffer)
-            .ok_or("buffer not found")?;
-        let data_ptr = allocation
-            .mapped_slice_mut()
-            .ok_or("buffer memory cant be mapped as mutable")?;
-        data_ptr[..data.len()].copy_from_slice(data);
-        Ok(())
     }
 
     pub fn create_image_2d(
@@ -149,47 +86,17 @@ impl Allocator {
         }
     }
 
-    fn delete_allocations_inner(
-        &mut self,
-        buffers: &[vk::Buffer],
-        images: &[vk::Image],
-    ) -> Result<(), String> {
-        for buffer in buffers {
-            if let Some(allocation) = self.buffer_allocations.remove(buffer) {
-                self.allocator
-                    .free(allocation)
-                    .map_err(|e| format!("at buffer deallocation: {e}"))?;
-            }
-        }
-        for image in images {
-            if let Some(allocation) = self.image_allocations.remove(image) {
-                self.allocator
-                    .free(allocation)
-                    .map_err(|e| format!("at image deallocation: {e}"))?;
-            }
+    pub fn free_tbd(&mut self) -> Result<(), String> {
+        let mut to_be_deleted = self.to_be_deleted.lock().map_err(|e| e.to_string())?;
+        for allocation in to_be_deleted.drain(..) {
+            self.allocator.free(allocation).map_err(|e| format!("at allocation free: {e}"))?;
         }
         Ok(())
-    }
-
-    pub fn delete_allocations(
-        &mut self,
-        buffers: &[&Buffer],
-        images: &[&Image2d],
-    ) -> Result<(), String> {
-        let buffers = buffers.iter().map(|buffer| buffer.buffer).collect::<Vec<_>>();
-        let images = images.iter().map(|image| image.image).collect::<Vec<_>>();
-        self.delete_allocations_inner(&buffers, &images)
-            .inspect_err(|e| eprintln!("at buffer and image deallocation: {e}"))
     }
 }
 
 impl Drop for Allocator {
     fn drop(&mut self) {
-        let _ = self
-            .delete_allocations_inner(
-                &self.buffer_allocations.keys().cloned().collect::<Vec<_>>(),
-                &self.image_allocations.keys().cloned().collect::<Vec<_>>(),
-            )
-            .inspect_err(|e| eprintln!("at buffer and image deallocation: {e}"));
+        
     }
 }
