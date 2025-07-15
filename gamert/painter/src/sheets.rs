@@ -118,6 +118,7 @@ impl Sheets {
                         extent: surface_resolution,
                         is_swapchain_image: true,
                         painter: painter.clone(),
+                        bound_mem: None,
                         image_view,
                     })
                 })
@@ -210,6 +211,7 @@ impl Sheets {
                         format: self.surface_format.format,
                         extent: new_resolution,
                         is_swapchain_image: true,
+                        bound_mem: None,
                         painter: self.painter.clone(),
                     })
                 })

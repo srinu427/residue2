@@ -81,6 +81,12 @@ impl Buffer {
 
         Ok(())
     }
+
+    pub fn unbind_memory(&mut self) -> Result<(), String> {
+        let Some((to_be_deleted, allocation)) = self.bound_mem.take() else { return Ok(()); };
+        to_be_deleted.lock().map_err(|e| format!("at locking memorly free list: {e}"))?.push(allocation);
+        Ok(())
+    }
 }
 
 impl Drop for Buffer {
@@ -89,6 +95,7 @@ impl Drop for Buffer {
             self.painter
                 .device
                 .destroy_buffer(self.buffer, None);
+            let _ = self.unbind_memory().inspect_err(|e| eprintln!("error unbinding buffer memory: {e}"));
         }
     }
 }
