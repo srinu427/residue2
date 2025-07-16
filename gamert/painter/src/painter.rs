@@ -1,4 +1,5 @@
 use ash::{ext, khr, vk};
+use crossbeam::channel::{Receiver, Sender};
 use strum::{Display, EnumCount};
 use thiserror::Error;
 use winit::{
@@ -90,7 +91,7 @@ pub enum ImageFormatType {
 }
 
 #[derive(Error, Debug)]
-pub enum PainterError{
+pub enum PainterError {
     #[error("Error loading Vulkan: {0}")]
     VkLoadError(ash::LoadingError),
     #[error("Error creating a Vulkan Instance: {0}")]
@@ -113,7 +114,18 @@ pub enum PainterError{
     UnableToCreateAllocator(gpu_allocator::AllocationError),
 }
 
+pub enum PainterDelete {
+    Buffer(vk::Buffer),
+    Image(vk::Image),
+    ImageView(vk::ImageView),
+    CommandPool(vk::CommandPool),
+    Semaphore(vk::Semaphore),
+    Fence(vk::Fence),
+}
+
 pub struct Painter {
+    pub delete_signal_sender: Sender<PainterDelete>,
+    pub delete_signal_receiver: Receiver<PainterDelete>,
     pub image_formats: [vk::Format; ImageFormatType::COUNT],
     pub graphics_queue: vk::Queue,
     pub graphics_queue_family_index: u32,
@@ -234,23 +246,26 @@ impl Painter {
             let depth_format = DEPTH_FORMAT_PREFERENCE_LIST
                 .iter()
                 .find_map(|&format| {
-                    let format_properties = instance.get_physical_device_format_properties(
-                        physical_device,
-                        format,
-                    );
-                    if format_properties.optimal_tiling_features.contains(
-                        vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
-                    ) {
+                    let format_properties =
+                        instance.get_physical_device_format_properties(physical_device, format);
+                    if format_properties
+                        .optimal_tiling_features
+                        .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+                    {
                         Some(format)
                     } else {
                         None
                     }
                 })
-                .ok_or(PainterError::NoSuitableImageFormat(ImageFormatType::DepthStencilOptimal))?;
-            
+                .ok_or(PainterError::NoSuitableImageFormat(
+                    ImageFormatType::DepthStencilOptimal,
+                ))?;
+
             let mut image_formats = [vk::Format::UNDEFINED; ImageFormatType::COUNT];
             image_formats[ImageFormatType::Rgba8Unorm as usize] = rgba8_format;
             image_formats[ImageFormatType::DepthStencilOptimal as usize] = depth_format;
+
+            let (s, r) = crossbeam::channel::unbounded();
 
             Ok(Self {
                 instance,
@@ -263,20 +278,41 @@ impl Painter {
                 graphics_queue_family_index,
                 physical_device,
                 image_formats,
+                delete_signal_sender: s,
+                delete_signal_receiver: r,
             })
         }
     }
 
-    pub fn new_allocator(&self) -> Result<gpu_allocator::vulkan::Allocator, PainterError> {
-        gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
-            instance: self.instance.clone(),
-            device: self.device.clone(),
-            physical_device: self.physical_device,
-            debug_settings: Default::default(),
-            buffer_device_address: false,
-            allocation_sizes: Default::default(),
-        })
-        .map_err(PainterError::UnableToCreateAllocator)
+    pub fn process_delete_events(&mut self) -> Result<(), PainterError> {
+        loop {
+            let Ok(tbd) = self.delete_signal_receiver.try_recv() else {
+                break;
+            };
+            unsafe {
+                match tbd {
+                    PainterDelete::Buffer(buffer) => {
+                        self.device.destroy_buffer(buffer, None);
+                    }
+                    PainterDelete::Image(image) => {
+                        self.device.destroy_image(image, None);
+                    }
+                    PainterDelete::ImageView(image_view) => {
+                        self.device.destroy_image_view(image_view, None);
+                    },
+                    PainterDelete::CommandPool(command_pool) => {
+                        self.device.destroy_command_pool(command_pool, None);
+                    }
+                    PainterDelete::Semaphore(semaphore) => {
+                        self.device.destroy_semaphore(semaphore, None);
+                    },
+                    PainterDelete::Fence(fence) => {
+                        self.device.destroy_fence(fence, None);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

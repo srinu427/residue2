@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::{Image2d, Painter, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderModule};
-
-
+use crate::{
+    Image2d, Painter, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputLayout, ShaderModule,
+};
 
 pub struct SingePassRenderPipeline {
     pub pipeline_layout: vk::PipelineLayout,
@@ -212,7 +212,10 @@ impl SingePassRenderPipeline {
         }
     }
 
-    pub fn make_shader_inputs(&self, allocator: &ShaderInputAllocator) -> Result<Vec<vk::DescriptorSet>, String> {
+    pub fn make_shader_inputs(
+        &self,
+        allocator: &ShaderInputAllocator,
+    ) -> Result<Vec<vk::DescriptorSet>, String> {
         self.shader_input_layouts
             .iter()
             .map(|input_layout| allocator.allocate(input_layout))

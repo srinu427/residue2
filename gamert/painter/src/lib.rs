@@ -17,7 +17,7 @@ mod shader_input;
 mod sheets;
 mod sync;
 
-pub use allocator::Allocator;
+pub use allocator::GAllocator;
 pub use buffer::Buffer;
 pub use command::{CommandBuffer, CommandPool, GpuCommand, GpuRenderPassCommand};
 pub use image::{Image2d, ImageAccess};

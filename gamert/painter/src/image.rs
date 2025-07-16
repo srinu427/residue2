@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex};
-
 use ash::vk;
+use crossbeam::channel::Sender;
+use thiserror::Error;
 
-use crate::{Allocator, Painter};
+use crate::{
+    GAllocator, Painter,
+    allocator::{GAllocatorError, RawAllocation},
+    painter::PainterDelete,
+};
 
 pub fn is_format_depth(format: vk::Format) -> bool {
     matches!(
@@ -111,14 +115,27 @@ impl ImageAccess {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum Image2dError {
+    #[error("Error creating Vulkan 2D Image: {0}")]
+    CreateError(vk::Result),
+    #[error("Error creating a View for the Image created: {0}")]
+    ViewCreateError(vk::Result),
+    #[error("Error from memory allocator: {0}")]
+    MemoryAllocationError(GAllocatorError),
+    #[error("Allocated memory not found with allocator")]
+    MemoryNotFoundError,
+    #[error("Error binding allocated memory to image: {0}")]
+    MemoryBindError(vk::Result),
+}
+
 pub struct Image2d {
     pub image_view: vk::ImageView,
     pub image: vk::Image,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
-    pub is_swapchain_image: bool,
-    pub(crate) bound_mem: Option<(Arc<Mutex<Vec<gpu_allocator::vulkan::Allocation>>>, gpu_allocator::vulkan::Allocation)>,
-    pub painter: Arc<Painter>,
+    pub(crate) bound_mem: Option<RawAllocation>,
+    pub(crate) delete_sender: Option<Sender<PainterDelete>>,
 }
 
 impl Image2d {
@@ -170,7 +187,7 @@ impl Image2d {
         painter: &Painter,
         image: vk::Image,
         format: vk::Format,
-    ) -> Result<vk::ImageView, String> {
+    ) -> Result<vk::ImageView, Image2dError> {
         unsafe {
             painter
                 .device
@@ -182,22 +199,47 @@ impl Image2d {
                         .subresource_range(Self::make_subresource_range(format)),
                     None,
                 )
-                .map_err(|e| format!("at image view creation: {e}"))
+                .map_err(Image2dError::ViewCreateError)
         }
     }
+}
 
-    pub fn new(painter: Arc<Painter>,
+impl Drop for Image2d {
+    fn drop(&mut self) {
+        let Some(delete_sender) = self.delete_sender.take() else {
+            return;
+        };
+        let _ = delete_sender
+            .try_send(PainterDelete::ImageView(self.image_view))
+            .inspect_err(|e| {
+                eprintln!(
+                    "error sending drop signal for image view {:?}: {e}",
+                    self.image_view
+                )
+            });
+        let _ = delete_sender
+            .try_send(PainterDelete::Image(self.image))
+            .inspect_err(|e| {
+                eprintln!("error sending drop signal for image {:?}: {e}", self.image)
+            });
+    }
+}
+
+impl Painter {
+    pub fn new_image_2d(
+        &self,
         format: vk::Format,
         extent: vk::Extent2D,
-        image_usage_flags: Vec<ImageAccess>
-    ) -> Result<Self, String> {
-        unsafe {
-            let mut usage_flags = vk::ImageUsageFlags::empty();
-            for access in image_usage_flags {
-                usage_flags |= access.to_usage_flags(is_format_depth(format));
-            }
-            let image = painter
-                .device
+        image_usage_flags: Vec<ImageAccess>,
+        mem_allocator: Option<&mut GAllocator>,
+        mem_host_visible: Option<bool>,
+    ) -> Result<Image2d, Image2dError> {
+        let mut usage_flags = vk::ImageUsageFlags::empty();
+        for access in image_usage_flags {
+            usage_flags |= access.to_usage_flags(is_format_depth(format));
+        }
+        let image = unsafe {
+            self.device
                 .create_image(
                     &vk::ImageCreateInfo::default()
                         .format(format)
@@ -213,58 +255,45 @@ impl Image2d {
                         .samples(vk::SampleCountFlags::TYPE_1),
                     None,
                 )
-                .map_err(|e| format!("at image creation: {e}"))?;
-            let image_view = Self::create_image_view(&painter, image, format)
-                .map_err(|e| format!("at image view creation: {e}"))?;
-            Ok(Self { image_view, image, format, extent, is_swapchain_image: false, bound_mem: None, painter })
-        }
-    }
+                .map_err(Image2dError::CreateError)?
+        };
 
-    pub fn bna_memory(&mut self, allocator: &mut Allocator) -> Result<(), String> {
-        if self.bound_mem.is_some() {
-            return Ok(());
-        }
+        let image_view = unsafe {
+            self.device
+                .create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(format)
+                        .subresource_range(Image2d::make_subresource_range(format)),
+                    None,
+                )
+                .map_err(Image2dError::ViewCreateError)?
+        };
 
-        let requirements = unsafe { self.painter.device.get_image_memory_requirements(self.image) };
-        let allocation = allocator
-            .allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: &format!("{:?}", self.image),
-                requirements,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .map_err(|e| format!("at image allocation: {e}"))?;
-
-        unsafe {
-            self.painter
-                .device
-                .bind_image_memory(self.image, allocation.memory(), allocation.offset())
-                .map_err(|e| format!("at image bind memory: {e}"))?;
-        }
-
-        self.bound_mem = Some((allocator.to_be_deleted.clone(), allocation));
-        Ok(())
-    }
-
-    pub fn unbind_memory(&mut self) -> Result<(), String> {
-        let Some((to_be_deleted, allocation)) = self.bound_mem.take() else { return Ok(()); };
-        to_be_deleted.lock().map_err(|e| format!("at locking memorly free list: {e}"))?.push(allocation);
-        Ok(())
-    }
-}
-
-impl Drop for Image2d {
-    fn drop(&mut self) {
-        unsafe {
-            self.painter
-                .device
-                .destroy_image_view(self.image_view, None);
-
-            if !self.is_swapchain_image {
-                self.painter.device.destroy_image(self.image, None);
+        let bound_mem = match mem_allocator {
+            Some(mem_allocator) => {
+                let requirements = unsafe { self.device.get_image_memory_requirements(image) };
+                let gpu_local = !mem_host_visible.unwrap_or(false);
+                let allocation = mem_allocator
+                    .allocate_mem(&format!("{:?}", image), requirements, gpu_local)
+                    .map_err(Image2dError::MemoryAllocationError)?;
+                unsafe {
+                    self.device
+                        .bind_image_memory(image, allocation.memory(), allocation.offset())
+                        .map_err(Image2dError::MemoryBindError)?;
+                }
+                Some(allocation)
             }
-        }
+            None => None,
+        };
+        Ok(Image2d {
+            image_view,
+            image,
+            format,
+            extent,
+            bound_mem,
+            delete_sender: Some(self.delete_signal_sender.clone()),
+        })
     }
 }

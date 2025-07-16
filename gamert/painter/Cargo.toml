@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ash = "0.38.0"
 ash-window = "0.13.0"
+crossbeam = "0.8.4"
 gpu-allocator = "0.27.0"
 hashbrown = "0.15.4"
 slotmap = "1.0.7"

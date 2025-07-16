@@ -4,7 +4,7 @@ use ash::vk;
 use glam::Vec4Swizzles;
 use include_bytes_aligned::include_bytes_aligned;
 use painter::{
-    ash, slotmap::{new_key_type, SlotMap}, Allocator, Buffer, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputType, SingePassRenderPipeline
+    ash, slotmap::{new_key_type, SlotMap}, GAllocator, Buffer, CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuRenderPassCommand, Image2d, ImageAccess, Painter, RenderOutput, ShaderInputAllocator, ShaderInputBindingInfo, ShaderInputType, SingePassRenderPipeline
 };
 
 static VERTEX_SHADER_CODE: &[u8] = include_bytes_aligned!(4, "shaders/mesh_painter.vert.spv");
@@ -53,7 +53,7 @@ pub struct PerFrameData {
 impl PerFrameData {
     pub fn new(
         pipeline: &SingePassRenderPipeline,
-        allocator: &mut Allocator,
+        allocator: &mut GAllocator,
         color_format: vk::Format,
         depth_format: vk::Format,
         extent: vk::Extent2D,
@@ -63,42 +63,52 @@ impl PerFrameData {
         let descriptor_sets = pipeline
             .make_shader_inputs(shader_input_allocator)
             .map_err(|e| format!("at make shader inputs: {e}"))?;
-        let vertex_buffer = allocator
-            .create_buffer(
-                32 * 1024 * 1024,
-                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-                false,
-            )
+        let painter = pipeline.painter.clone();
+        let vertex_buffer = Buffer::new_with_mem(
+            painter.clone(),
+            32 * 1024 * 1024,
+            vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            allocator,
+            false
+        )
             .map_err(|e| format!("at create vertex buffer: {e}"))?;
-        let index_buffer = allocator
-            .create_buffer(
-                4 * 1024 * 1024,
-                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-                false,
-            )
-            .map_err(|e| format!("at create index buffer: {e}"))?;
-        let scene_buffer = allocator
-            .create_buffer(
-                size_of::<SceneDescriptorData>() as _,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-                false,
-            )
-            .map_err(|e| format!("at create scene buffer: {e}"))?;
-        let color_image = allocator
-            .create_image_2d(
-                color_format,
-                extent,
-                vec![ImageAccess::PipelineAttachment, ImageAccess::TransferRead],
-                true,
-            )
+
+        let index_buffer = Buffer::new_with_mem(
+            painter.clone(),
+            4 * 1024 * 1024,
+            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            allocator,
+            false
+        )
+            .map_err(|e| format!("at create vertex buffer: {e}"))?;
+
+        let scene_buffer = Buffer::new_with_mem(
+            painter.clone(),
+            size_of::<SceneDescriptorData>() as _,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            allocator,
+            false
+        )
+            .map_err(|e| format!("at create vertex buffer: {e}"))?;
+
+        let color_image = Image2d::new_with_mem(
+            painter.clone(),
+            color_format,
+            extent,
+            vec![ImageAccess::PipelineAttachment, ImageAccess::TransferRead],
+            allocator,
+            true
+        )
             .map_err(|e| format!("at create color image: {e}"))?;
-        let depth_image = allocator
-            .create_image_2d(
-                depth_format,
-                extent,
-                vec![ImageAccess::PipelineAttachment],
-                true,
-            )
+
+        let depth_image = Image2d::new_with_mem(
+            painter.clone(),
+            depth_format,
+            extent,
+            vec![ImageAccess::PipelineAttachment],
+            allocator,
+            true
+        )
             .map_err(|e| format!("at create depth image: {e}"))?;
 
         let commands = vec![
@@ -140,15 +150,6 @@ impl PerFrameData {
             depth_image,
             render_output,
         })
-    }
-
-    pub fn cleanup(&self, allocator: &mut Allocator) {
-        let _ = allocator
-            .delete_allocations(
-                &[&self.vertex_buffer, &self.index_buffer, &self.scene_buffer],
-                &[&self.color_image, &self.depth_image],
-            )
-            .inspect_err(|e| eprintln!("at delete allocations: {e}"));
     }
 }
 
@@ -236,7 +237,7 @@ pub struct MeshPainter {
     color_attachment_format: vk::Format,
     depth_attachment_format: vk::Format,
     sampler: vk::Sampler,
-    allocator: Allocator,
+    allocator: GAllocator,
     meshes: SlotMap<MeshID, Mesh>,
     textures: SlotMap<TextureID, Image2d>,
     textures_to_delete: Vec<Image2d>,
@@ -342,7 +343,7 @@ impl MeshPainter {
             .map_err(|e| format!("at create shader input allocator: {e}"))?;
 
             let mut allocator =
-                Allocator::new(painter.clone()).map_err(|e| format!("at create allocator: {e}"))?;
+                GAllocator::new(painter.clone()).map_err(|e| format!("at create allocator: {e}"))?;
 
             let command_pool = CommandPool::new(painter.clone())
                 .map_err(|e| format!("at create command pool: {e}"))?;
@@ -396,28 +397,23 @@ impl MeshPainter {
     pub fn add_texture(&mut self, path: &str) -> Result<TextureID, String> {
         let image = image::open(path).map_err(|e| format!("at open image: {e}"))?;
         let image_data = image.to_rgba8();
-        let vk_image = self
-            .allocator
-            .create_image_2d(
-                vk::Format::R8G8B8A8_UNORM,
-                vk::Extent2D {
-                    width: image.width(),
-                    height: image.height(),
-                },
-                vec![ImageAccess::TransferWrite, ImageAccess::ShaderRead],
-                true,
-            )
+        let vk_image = Image2d::new_with_mem(
+            self.painter.clone(),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::Extent2D {
+                width: image.width(),
+                height: image.height(),
+            },
+            vec![ImageAccess::TransferWrite, ImageAccess::ShaderRead],
+            &mut self.allocator,
+            true
+        )
             .map_err(|e| format!("at vk create image: {e}"))?;
-        let stage_buffer = self
-            .allocator
-            .create_buffer(
-                image_data.len() as u64,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                false,
-            )
-            .map_err(|e| format!("at create stage buffer: {e}"))?;
+
+        let stage_buffer = Buffer::new_with_mem(self.painter.clone(), image_data.len() as u64, vk::BufferUsageFlags::TRANSFER_SRC, &mut self.allocator, false).map_err(|e| format!("at create stage buffer: {e}"))?;
+
         self.allocator
-            .write_to_buffer_mem(&stage_buffer, &image_data)
+            .write_to_mem(stage_buffer.get_allocation_id().ok_or("mem not allocated???".to_string())?, &image_data)
             .map_err(|e| format!("at write to staging buffer mem: {e}"))?;
 
         let commands = vec![
@@ -446,10 +442,6 @@ impl MeshPainter {
         fence
             .wait()
             .map_err(|e| format!("at texture upload fence wait: {e}"))?;
-
-        self.allocator
-            .delete_allocations(&[&stage_buffer], &[])
-            .map_err(|e| format!("at delete allocations: {e}"))?;
 
         let texture_id = self.textures.insert(vk_image);
         Ok(texture_id)
@@ -521,13 +513,13 @@ impl MeshPainter {
         unsafe {
             let scene_data = SceneDescriptorData { cam_data: camera };
             self.allocator
-                .write_to_buffer_mem(sb, &[scene_data].align_to::<u8>().1)
+                .write_to_mem(sb.get_allocation_id().ok_or("mem not allocated???".to_string())?, &[scene_data].align_to::<u8>().1)
                 .map_err(|e| format!("at write to scene buffer mem: {e}"))?;
             self.allocator
-                .write_to_buffer_mem(vb, vb_data.as_slice().align_to::<u8>().1)
+                .write_to_mem(vb.get_allocation_id().ok_or("mem not allocated???".to_string())?, vb_data.as_slice().align_to::<u8>().1)
                 .map_err(|e| format!("at write to vertex buffer mem: {e}"))?;
             self.allocator
-                .write_to_buffer_mem(ib, ib_data.as_slice().align_to::<u8>().1)
+                .write_to_mem(ib.get_allocation_id().ok_or("mem not allocated???".to_string())?, ib_data.as_slice().align_to::<u8>().1)
                 .map_err(|e| format!("at write to index buffer mem: {e}"))?;
 
             let scene_dset = self.per_frame_datas[norm_frame_number].descriptor_sets[0];
@@ -630,9 +622,6 @@ impl Drop for MeshPainter {
         let device = &self.painter.device;
         self.textures_to_delete.clear();
         self.textures.clear();
-        for per_frame_data in self.per_frame_datas.drain(..) {
-            per_frame_data.cleanup(&mut self.allocator);
-        }
         unsafe {
             device.destroy_sampler(self.sampler, None);
         }

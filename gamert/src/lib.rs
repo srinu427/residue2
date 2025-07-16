@@ -59,7 +59,7 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(window: Window) -> Result<Self, String> {
-        let painter = Arc::new(Painter::new(window)?);
+        let painter = Arc::new(Painter::new(window).map_err(|e| e.to_string())?);
 
         let command_pool = CommandPool::new(painter.clone())
             .map_err(|e| format!("at create command pool: {e}"))?;

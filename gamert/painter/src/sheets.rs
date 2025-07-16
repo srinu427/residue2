@@ -116,20 +116,27 @@ impl Sheets {
                         image,
                         format: surface_format.format,
                         extent: surface_resolution,
-                        is_swapchain_image: true,
-                        painter: painter.clone(),
                         bound_mem: None,
                         image_view,
+                        delete_sender: None,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            let commands = swapchain_images.iter().map(|image| GpuCommand::ImageAccessInit { image: image, access: ImageAccess::Present }).collect::<Vec<_>>();
-            command_buffer.record(&commands, true)
+            let commands = swapchain_images
+                .iter()
+                .map(|image| GpuCommand::ImageAccessInit {
+                    image: image,
+                    access: ImageAccess::Present,
+                })
+                .collect::<Vec<_>>();
+            command_buffer
+                .record(&commands, true)
                 .map_err(|e| format!("at command buffer record: {e}"))?;
             let fence = CpuFuture::new(painter.clone(), false)
                 .map_err(|e| format!("at fence creation: {e}"))?;
-            command_buffer.submit(&[], &[], &[], Some(&fence))
+            command_buffer
+                .submit(&[], &[], &[], Some(&fence))
                 .map_err(|e| format!("at command buffer submit: {e}"))?;
             fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
             command_buffer
@@ -210,19 +217,26 @@ impl Sheets {
                         image,
                         format: self.surface_format.format,
                         extent: new_resolution,
-                        is_swapchain_image: true,
                         bound_mem: None,
-                        painter: self.painter.clone(),
+                        delete_sender: None,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            let commands = new_swapchain_images.iter().map(|image| GpuCommand::ImageAccessInit { image: image, access: ImageAccess::Present }).collect::<Vec<_>>();
-            command_buffer.record(&commands, true)
+            let commands = new_swapchain_images
+                .iter()
+                .map(|image| GpuCommand::ImageAccessInit {
+                    image: image,
+                    access: ImageAccess::Present,
+                })
+                .collect::<Vec<_>>();
+            command_buffer
+                .record(&commands, true)
                 .map_err(|e| format!("at command buffer record: {e}"))?;
             let fence = CpuFuture::new(self.painter.clone(), false)
                 .map_err(|e| format!("at fence creation: {e}"))?;
-            command_buffer.submit(&[], &[], &[], Some(&fence))
+            command_buffer
+                .submit(&[], &[], &[], Some(&fence))
                 .map_err(|e| format!("at command buffer submit: {e}"))?;
             fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
             command_buffer
@@ -243,7 +257,7 @@ impl Sheets {
         &mut self,
         semaphore: Option<&GpuFuture>,
         mut fence: Option<&CpuFuture>,
-        command_buffer: &mut CommandBuffer
+        command_buffer: &mut CommandBuffer,
     ) -> Result<u32, String> {
         unsafe {
             let vk_fence = fence.map_or(vk::Fence::null(), |fence| fence.fence);
@@ -253,32 +267,40 @@ impl Sheets {
                 return Err("either fence or semaphore must be provided".to_string());
             }
             loop {
-                let (img_id, refresh_needed) = match self
-                    .swapchain_device
-                    .acquire_next_image(self.swapchain, std::u64::MAX, vk_semaphore, vk_fence) {
-                        Ok((i_id, ref_needed)) => (Some(i_id), ref_needed),
-                        Err(e) => {
-                            if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
-                                (None, true)
-                            } else {
-                                return Err(format!("at acquiring next image: {e}"))?;
-                            }
+                let (img_id, refresh_needed) = match self.swapchain_device.acquire_next_image(
+                    self.swapchain,
+                    std::u64::MAX,
+                    vk_semaphore,
+                    vk_fence,
+                ) {
+                    Ok((i_id, ref_needed)) => (Some(i_id), ref_needed),
+                    Err(e) => {
+                        if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                            (None, true)
+                        } else {
+                            return Err(format!("at acquiring next image: {e}"))?;
                         }
-                    };
+                    }
+                };
                 if refresh_needed {
                     self.refresh_resolution(command_buffer)
                         .map_err(|e| format!("at refreshing swapchain resolution: {e}"))?;
                     if img_id.is_some() {
-                        fence.as_mut().map(|f| {
-                            f.wait().map_err(|e| format!("at fence wait before refresh: {e}"))?;
-                            f.reset().map_err(|e| format!("at fence reset before refresh: {e}"))?;
-                            Ok::<(), String>(())
-                        }).transpose()?;
+                        fence
+                            .as_mut()
+                            .map(|f| {
+                                f.wait()
+                                    .map_err(|e| format!("at fence wait before refresh: {e}"))?;
+                                f.reset()
+                                    .map_err(|e| format!("at fence reset before refresh: {e}"))?;
+                                Ok::<(), String>(())
+                            })
+                            .transpose()?;
                     }
                     continue;
                 }
                 if let Some(i_id) = img_id {
-                    return Ok(i_id)
+                    return Ok(i_id);
                 }
             }
         }
@@ -294,14 +316,13 @@ impl Sheets {
                 .iter()
                 .map(|semaphore| semaphore.semaphore)
                 .collect::<Vec<_>>();
-            match self.swapchain_device
-                .queue_present(
-                    self.painter.graphics_queue,
-                    &vk::PresentInfoKHR::default()
-                        .wait_semaphores(&wait_semaphores)
-                        .swapchains(&[self.swapchain])
-                        .image_indices(&[image_index]),
-                ) {
+            match self.swapchain_device.queue_present(
+                self.painter.graphics_queue,
+                &vk::PresentInfoKHR::default()
+                    .wait_semaphores(&wait_semaphores)
+                    .swapchains(&[self.swapchain])
+                    .image_indices(&[image_index]),
+            ) {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     if e != vk::Result::ERROR_OUT_OF_DATE_KHR {

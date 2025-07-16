@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ash::vk;
 
-use crate::{Image2d, Painter};
+use crate::Painter;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ShaderInputType {
