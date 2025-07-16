@@ -28,9 +28,3 @@ impl Allocator {
         Ok(())
     }
 }
-
-impl Drop for Allocator {
-    fn drop(&mut self) {
-        
-    }
-}

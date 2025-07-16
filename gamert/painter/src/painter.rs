@@ -1,5 +1,6 @@
 use ash::{ext, khr, vk};
-use strum::EnumCount;
+use strum::{Display, EnumCount};
+use thiserror::Error;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
@@ -50,7 +51,7 @@ pub fn get_device_extensions() -> Vec<*const i8> {
     ]
 }
 
-pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, String> {
+pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, PainterError> {
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"Residue VK App")
         .application_version(0)
@@ -77,15 +78,39 @@ pub fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, String> {
     unsafe {
         entry
             .create_instance(&vk_instance_create_info, None)
-            .map_err(|e| format!("at instance creation: {e}"))
+            .map_err(PainterError::VkInstanceError)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount, Display)]
 #[repr(usize)]
 pub enum ImageFormatType {
     Rgba8Unorm = 0,
     DepthStencilOptimal = 1,
+}
+
+#[derive(Error, Debug)]
+pub enum PainterError{
+    #[error("Error loading Vulkan: {0}")]
+    VkLoadError(ash::LoadingError),
+    #[error("Error creating a Vulkan Instance: {0}")]
+    VkInstanceError(vk::Result),
+    #[error("Error getting raw display handle: {0}")]
+    GetRawDisplayHandleError(winit::raw_window_handle::HandleError),
+    #[error("Error getting raw window handle: {0}")]
+    GetRawWindowHandleError(winit::raw_window_handle::HandleError),
+    #[error("Error creating surface: {0}")]
+    SurfaceCreationError(vk::Result),
+    #[error("Error getting GPU list: {0}")]
+    GetGpusError(vk::Result),
+    #[error("No Supported GPUs found")]
+    NoSupportedGpu,
+    #[error("Error creating Vulkan Logical Device: {0}")]
+    LogicalDeviceCreateError(vk::Result),
+    #[error("Can't finding suitable image format of type: {0}")]
+    NoSuitableImageFormat(ImageFormatType),
+    #[error("Error creating allocation error: {0}")]
+    UnableToCreateAllocator(gpu_allocator::AllocationError),
 }
 
 pub struct Painter {
@@ -107,7 +132,7 @@ impl Painter {
         surface_instance: &khr::surface::Instance,
         physical_device: vk::PhysicalDevice,
         surface: vk::SurfaceKHR,
-    ) -> Result<u32, String> {
+    ) -> Option<u32> {
         let queue_families =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
         queue_families
@@ -124,14 +149,13 @@ impl Painter {
             })
             .max_by_key(|(_, queue_family)| queue_family.queue_count)
             .map(|(i, _)| i as u32)
-            .ok_or("no suitable queue family found".to_string())
     }
-    pub fn new(window: Window) -> Result<Self, String> {
-        unsafe {
-            let entry = ash::Entry::load().map_err(|e| format!("at VK load: {e}"))?;
 
-            let instance =
-                create_instance(&entry).map_err(|e| format!("at instance creation: {e}"))?;
+    pub fn new(window: Window) -> Result<Self, PainterError> {
+        unsafe {
+            let entry = ash::Entry::load().map_err(PainterError::VkLoadError)?;
+
+            let instance = create_instance(&entry)?;
 
             let surface_instance = khr::surface::Instance::new(&entry, &instance);
 
@@ -140,24 +164,23 @@ impl Painter {
                 &instance,
                 window
                     .display_handle()
-                    .map_err(|e| format!("at display handle: {e}"))?
+                    .map_err(PainterError::GetRawDisplayHandleError)?
                     .as_raw(),
                 window
                     .window_handle()
-                    .map_err(|e| format!("at window handle: {e}"))?
+                    .map_err(PainterError::GetRawWindowHandleError)?
                     .as_raw(),
                 None,
             )
-            .map_err(|e| format!("at surface creation: {e}"))?;
+            .map_err(PainterError::SurfaceCreationError)?;
 
             let mut physical_devices = instance
                 .enumerate_physical_devices()
-                .map_err(|e| format!("at physical device enumeration: {e}"))?
+                .map_err(PainterError::GetGpusError)?
                 .iter()
                 .filter_map(|&physical_device| {
                     Self::select_gpu_queue(&instance, &surface_instance, physical_device, surface)
                         .map(|queue_family_index| (physical_device, queue_family_index))
-                        .ok()
                 })
                 .collect::<Vec<_>>();
 
@@ -173,7 +196,7 @@ impl Painter {
                 physical_devices
                     .last()
                     .cloned()
-                    .ok_or("no suitable physical device found".to_string())?;
+                    .ok_or(PainterError::NoSupportedGpu)?;
 
             let queue_priorities = [1.0];
             let queue_infos = vec![
@@ -203,7 +226,7 @@ impl Painter {
 
             let device = instance
                 .create_device(physical_device, &device_create_info, None)
-                .map_err(|e| format!("at device creation: {e}"))?;
+                .map_err(PainterError::LogicalDeviceCreateError)?;
 
             let graphics_queue = device.get_device_queue(graphics_queue_family_index, 0);
 
@@ -223,7 +246,7 @@ impl Painter {
                         None
                     }
                 })
-                .ok_or("no suitable depth format found".to_string())?;
+                .ok_or(PainterError::NoSuitableImageFormat(ImageFormatType::DepthStencilOptimal))?;
             
             let mut image_formats = [vk::Format::UNDEFINED; ImageFormatType::COUNT];
             image_formats[ImageFormatType::Rgba8Unorm as usize] = rgba8_format;
@@ -244,7 +267,7 @@ impl Painter {
         }
     }
 
-    pub fn new_allocator(&self) -> Result<gpu_allocator::vulkan::Allocator, String> {
+    pub fn new_allocator(&self) -> Result<gpu_allocator::vulkan::Allocator, PainterError> {
         gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
             instance: self.instance.clone(),
             device: self.device.clone(),
@@ -253,7 +276,7 @@ impl Painter {
             buffer_device_address: false,
             allocation_sizes: Default::default(),
         })
-        .map_err(|e| format!("at allocator creation: {e}"))
+        .map_err(PainterError::UnableToCreateAllocator)
     }
 }
 

@@ -38,10 +38,15 @@ impl Buffer {
     
     }
 
-    pub fn bna_memory(&mut self, allocator: &mut Allocator) -> Result<(), String> {
+    pub fn bna_memory(&mut self, allocator: &mut Allocator, gpu_local: bool) -> Result<(), String> {
         if self.bound_mem.is_some() {
             return Ok(());
         }
+        let location = if gpu_local {
+            gpu_allocator::MemoryLocation::GpuOnly
+        } else {
+            gpu_allocator::MemoryLocation::CpuToGpu
+        };
 
         let requirements = unsafe { self.painter.device.get_buffer_memory_requirements(self.buffer) };
         let allocation = allocator
@@ -49,7 +54,7 @@ impl Buffer {
             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
                 name: &format!("{:?}", self.buffer),
                 requirements,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
+                location,
                 linear: false,
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             })
@@ -64,6 +69,18 @@ impl Buffer {
 
         self.bound_mem = Some((allocator.to_be_deleted.clone(), allocation));
         Ok(())
+    }
+
+    pub fn new_with_mem(
+        painter: Arc<Painter>,
+        size: u64,
+        buffer_usage_flags: vk::BufferUsageFlags,
+        allocator: &mut Allocator,
+        gpu_local: bool
+    ) -> Result<Self, String> {
+        let mut buffer = Self::new(painter, size, buffer_usage_flags)?;
+        buffer.bna_memory(allocator, gpu_local)?;
+        Ok(buffer)
     }
 
     pub fn write_data(&mut self, data: &[u8]) -> Result<(), String> {
