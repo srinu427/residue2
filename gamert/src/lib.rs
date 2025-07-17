@@ -9,11 +9,15 @@ use painter::{
 };
 
 mod mesh_painter;
+mod renderables;
+mod renderers;
+mod scene_elements;
+mod swapchain_manager;
 
-use mesh_painter::CamData;
 use mesh_painter::DrawableMeshAndTexture;
 use mesh_painter::MeshPainter;
-use mesh_painter::Vertex;
+
+use renderables::mesh::Vertex;
 
 fn square_verts() -> Vec<Vertex> {
     vec![

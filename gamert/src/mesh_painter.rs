@@ -14,27 +14,6 @@ static MAX_TEXTURES: usize = 100;
 
 #[repr(C)]
 #[derive(Debug, Clone)]
-pub struct CamData {
-    pub pos: glam::Vec4,
-    pub look_at: glam::Vec4,
-    pub view_proj: glam::Mat4,
-}
-
-impl CamData {
-    pub fn new(pos: glam::Vec4, look_at: glam::Vec4) -> Self {
-        let view = glam::Mat4::look_at_rh(pos.xyz(), look_at.xyz(), glam::Vec3::new(0.0, 1.0, 0.0));
-        let proj = glam::Mat4::perspective_rh(90.0f32.to_radians(), 1.0, 0.1, 100.0);
-        let view_proj = proj * view;
-        Self {
-            pos,
-            look_at,
-            view_proj,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone)]
 pub struct SceneDescriptorData {
     cam_data: CamData,
 }
@@ -179,48 +158,6 @@ pub struct ObjDrawParams {
     pub idx_offset: u32,
     pub idx_count: u32,
     pub obj_info: GpuObjectInfo,
-}
-
-#[derive(Debug, Clone)]
-pub struct Vertex {
-    pub position: glam::Vec4,
-    pub normal: glam::Vec4,
-    // tangent: glam::Vec4,
-    // bitangent: glam::Vec4,
-    pub tex_coords: glam::Vec4,
-}
-
-impl Vertex {
-    fn get_binding_description() -> Vec<vk::VertexInputBindingDescription> {
-        vec![
-            vk::VertexInputBindingDescription::default()
-                .stride(size_of::<Self>() as u32)
-                .input_rate(vk::VertexInputRate::VERTEX),
-        ]
-    }
-
-    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
-        vec![
-            vk::VertexInputAttributeDescription::default()
-                .location(0)
-                .offset(offset_of!(Self, position) as u32)
-                .format(vk::Format::R32G32B32A32_SFLOAT),
-            vk::VertexInputAttributeDescription::default()
-                .location(1)
-                .offset(offset_of!(Self, normal) as u32)
-                .format(vk::Format::R32G32B32A32_SFLOAT),
-            vk::VertexInputAttributeDescription::default()
-                .location(2)
-                .offset(offset_of!(Self, tex_coords) as u32)
-                .format(vk::Format::R32G32B32A32_SFLOAT),
-        ]
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Mesh {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
 }
 
 new_key_type! {
@@ -397,23 +334,21 @@ impl MeshPainter {
     pub fn add_texture(&mut self, path: &str) -> Result<TextureID, String> {
         let image = image::open(path).map_err(|e| format!("at open image: {e}"))?;
         let image_data = image.to_rgba8();
-        let vk_image = Image2d::new_with_mem(
-            self.painter.clone(),
+        let vk_image = self.painter.create_image_2d(
             vk::Format::R8G8B8A8_UNORM,
             vk::Extent2D {
                 width: image.width(),
                 height: image.height(),
             },
             vec![ImageAccess::TransferWrite, ImageAccess::ShaderRead],
-            &mut self.allocator,
-            true
+            Some(&mut self.allocator),
+            Some(false)
         )
             .map_err(|e| format!("at vk create image: {e}"))?;
 
-        let stage_buffer = Buffer::new_with_mem(self.painter.clone(), image_data.len() as u64, vk::BufferUsageFlags::TRANSFER_SRC, &mut self.allocator, false).map_err(|e| format!("at create stage buffer: {e}"))?;
+        let mut stage_buffer = self.painter.create_buffer(image_data.len() as u64, vk::BufferUsageFlags::TRANSFER_SRC, Some(&mut self.allocator), Some(true)).map_err(|e| format!("at create stage buffer: {e}"))?;
 
-        self.allocator
-            .write_to_mem(stage_buffer.get_allocation_id().ok_or("mem not allocated???".to_string())?, &image_data)
+        stage_buffer.write_to_mem(&image_data)
             .map_err(|e| format!("at write to staging buffer mem: {e}"))?;
 
         let commands = vec![
@@ -512,15 +447,9 @@ impl MeshPainter {
 
         unsafe {
             let scene_data = SceneDescriptorData { cam_data: camera };
-            self.allocator
-                .write_to_mem(sb.get_allocation_id().ok_or("mem not allocated???".to_string())?, &[scene_data].align_to::<u8>().1)
-                .map_err(|e| format!("at write to scene buffer mem: {e}"))?;
-            self.allocator
-                .write_to_mem(vb.get_allocation_id().ok_or("mem not allocated???".to_string())?, vb_data.as_slice().align_to::<u8>().1)
-                .map_err(|e| format!("at write to vertex buffer mem: {e}"))?;
-            self.allocator
-                .write_to_mem(ib.get_allocation_id().ok_or("mem not allocated???".to_string())?, ib_data.as_slice().align_to::<u8>().1)
-                .map_err(|e| format!("at write to index buffer mem: {e}"))?;
+            sb.write_to_mem(&[scene_data].align_to::<u8>().1).map_err(|e| format!("at write to scene buffer mem: {e}"))?;
+            vb.write_to_mem(vb_data.as_slice().align_to::<u8>().1).map_err(|e| format!("at write to scene buffer mem: {e}"))?;
+            ib.write_to_mem(ib_data.as_slice().align_to::<u8>().1).map_err(|e| format!("at write to scene buffer mem: {e}"))?;
 
             let scene_dset = self.per_frame_datas[norm_frame_number].descriptor_sets[0];
             let texture_dset = self.per_frame_datas[norm_frame_number].descriptor_sets[1];

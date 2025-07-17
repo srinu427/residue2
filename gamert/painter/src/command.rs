@@ -239,7 +239,7 @@ impl Drop for CommandPool {
 }
 
 impl Painter {
-    pub fn new_command_pool(&self) -> Result<CommandPool, CommandPoolError> {
+    pub fn create_command_pool(&self) -> Result<CommandPool, CommandPoolError> {
         let command_pool = unsafe {
             self.device
                 .create_command_pool(
@@ -298,7 +298,7 @@ impl Painter {
     }
 
     pub fn record_cmd_buffer(
-        &mut self,
+        &self,
         command_buffer: &CommandBuffer,
         commands: &[GpuCommand],
         one_time: bool,
@@ -322,25 +322,19 @@ impl Painter {
                     let (_, image_transitions) = image_accesses
                         .entry(transition.image.image)
                         .or_insert((transition.image, vec![]));
-                    match transition.old_access {
-                        Some(old_access) => {
-                            if image_transitions.len() == 0 {
-                                image_transitions.push((command_idx, old_access));
-                            }
+                    if let Some(old_access) = transition.old_access {
+                        if image_transitions.len() == 0 {
+                            image_transitions.push((command_idx, old_access));
                         }
-                        None => {}
                     }
-                    match transition.new_access {
-                        Some(new_access) => {
-                            if let Some((_, last_access)) = image_transitions.last() {
-                                if *last_access != new_access {
-                                    image_transitions.push((command_idx + 1, new_access));
-                                }
-                            } else {
+                    if let Some(new_access) = transition.new_access {
+                        if let Some((_, last_access)) = image_transitions.last() {
+                            if *last_access != new_access {
                                 image_transitions.push((command_idx + 1, new_access));
                             }
+                        } else {
+                            image_transitions.push((command_idx + 1, new_access));
                         }
-                        None => {}
                     }
                 }
             }
@@ -472,9 +466,9 @@ impl Painter {
     pub fn submit_cmd_buffer(
         &self,
         command_buffer: &CommandBuffer,
-        signal_semaphores: &[&GpuFuture],
-        wait_semaphores: &[&GpuFuture],
-        wait_stages: &[vk::PipelineStageFlags],
+        signal_semaphores: Vec<&GpuFuture>,
+        wait_semaphores: Vec<&GpuFuture>,
+        wait_stages: Vec<vk::PipelineStageFlags>,
         fence: Option<&CpuFuture>,
     ) -> Result<(), String> {
         unsafe {
@@ -494,7 +488,7 @@ impl Painter {
                     &[vk::SubmitInfo::default()
                         .signal_semaphores(&signal_semaphores)
                         .wait_semaphores(&wait_semaphores)
-                        .wait_dst_stage_mask(wait_stages)
+                        .wait_dst_stage_mask(&wait_stages)
                         .command_buffers(&[command_buffer.command_buffer])],
                     vk_fence,
                 )

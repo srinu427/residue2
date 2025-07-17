@@ -226,7 +226,7 @@ impl Drop for Image2d {
 }
 
 impl Painter {
-    pub fn new_image_2d(
+    pub fn create_image_2d(
         &self,
         format: vk::Format,
         extent: vk::Extent2D,

@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
 use ash::{khr, vk};
+use crossbeam::channel::Sender;
 
-use crate::{CommandBuffer, CpuFuture, GpuCommand, GpuFuture, Image2d, ImageAccess, Painter};
+use crate::{painter::PainterDelete, CommandBuffer, CpuFuture, GpuCommand, GpuFuture, Image2d, ImageAccess, Painter};
 
 pub struct Sheets {
     pub swapchain_images: Vec<Image2d>,
@@ -11,11 +10,11 @@ pub struct Sheets {
     pub surface_resolution: vk::Extent2D,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_device: khr::swapchain::Device,
-    pub painter: Arc<Painter>,
+    pub delete_sender: Sender<PainterDelete>,
 }
 
 impl Sheets {
-    pub fn new(painter: Arc<Painter>, command_buffer: &mut CommandBuffer) -> Result<Self, String> {
+    pub fn new(painter: &Painter, command_buffer: &mut CommandBuffer) -> Result<Self, String> {
         unsafe {
             // Swapchain creation
             let surface_instance = &painter.surface_instance;
@@ -130,18 +129,11 @@ impl Sheets {
                     access: ImageAccess::Present,
                 })
                 .collect::<Vec<_>>();
-            command_buffer
-                .record(&commands, true)
-                .map_err(|e| format!("at command buffer record: {e}"))?;
-            let fence = CpuFuture::new(painter.clone(), false)
+            painter.record_cmd_buffer(&command_buffer, &commands, true)?;
+            let fence = painter.create_cpu_future(false)
                 .map_err(|e| format!("at fence creation: {e}"))?;
-            command_buffer
-                .submit(&[], &[], &[], Some(&fence))
-                .map_err(|e| format!("at command buffer submit: {e}"))?;
-            fence.wait().map_err(|e| format!("at fence wait: {e}"))?;
-            command_buffer
-                .reset()
-                .map_err(|e| format!("at command buffer reset: {e}"))?;
+            painter.submit_cmd_buffer(&command_buffer, vec![], vec![], vec![], Some(&fence))?;
+            painter.cpu_future_wait(&fence).map_err(|e| format!("at fence wait: {e}"))?;
 
             Ok(Self {
                 swapchain_images,
@@ -150,12 +142,12 @@ impl Sheets {
                 surface_resolution,
                 swapchain,
                 swapchain_device,
-                painter,
+                delete_sender: painter.delete_signal_sender.clone(),
             })
         }
     }
 
-    pub fn refresh_resolution(&mut self, command_buffer: &mut CommandBuffer) -> Result<(), String> {
+    pub fn refresh_resolution(&mut self, device: &ash::Device, command_buffer: &mut CommandBuffer) -> Result<(), String> {
         unsafe {
             let surface_caps = self
                 .painter

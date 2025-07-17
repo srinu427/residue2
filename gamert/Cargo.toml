@@ -9,4 +9,5 @@ glam = "0.30.3"
 image = "0.25.6"
 include_bytes_aligned = "0.1.4"
 painter = { path = "painter" }
+thiserror = "2.0.12"
 

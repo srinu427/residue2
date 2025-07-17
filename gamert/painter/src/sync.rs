@@ -19,25 +19,6 @@ pub struct CpuFuture {
     delete_sender: Sender<PainterDelete>,
 }
 
-impl CpuFuture {
-    pub fn new(painter: &Painter, signaled: bool) -> Result<Self, String> {
-        unsafe {
-            let create_flags = if signaled {
-                vk::FenceCreateFlags::SIGNALED
-            } else {
-                vk::FenceCreateFlags::empty()
-            };
-            let fence = painter
-                .device
-                .create_fence(&vk::FenceCreateInfo::default().flags(create_flags), None)
-                .map_err(|e| format!("at fence creation: {e}"))?;
-            Ok(Self { fence, delete_sender: painter.delete_signal_sender.clone() })
-        }
-    }
-
-    
-}
-
 impl Drop for CpuFuture {
     fn drop(&mut self) {
         let _ = self
@@ -53,6 +34,21 @@ impl Drop for CpuFuture {
 }
 
 impl Painter {
+    pub fn create_cpu_future(&self, signaled: bool) -> Result<CpuFuture, CpuFutureError> {
+        let create_flags = if signaled {
+            vk::FenceCreateFlags::SIGNALED
+        } else {
+            vk::FenceCreateFlags::empty()
+        };
+        let fence = unsafe {
+            self
+                .device
+                .create_fence(&vk::FenceCreateInfo::default().flags(create_flags), None)
+                .map_err(CpuFutureError::CreateError)?
+        };
+        Ok(CpuFuture { fence, delete_sender: self.delete_signal_sender.clone() })
+    }
+
     pub fn cpu_future_wait(&self, cpu_future: &CpuFuture) -> Result<(), CpuFutureError> {
         unsafe {
             self
@@ -73,7 +69,7 @@ impl Painter {
         Ok(())
     }
 
-    pub fn wait_and_reset(&self, cpu_future: &CpuFuture) -> Result<(), CpuFutureError> {
+    pub fn cpu_future_wait_and_reset(&self, cpu_future: &CpuFuture) -> Result<(), CpuFutureError> {
         self.cpu_future_wait(cpu_future)?;
         self.cpu_future_reset(cpu_future)?;
         Ok(())
@@ -106,7 +102,7 @@ impl Drop for GpuFuture {
 }
 
 impl Painter {
-    pub fn new_gpu_future(&self) -> Result<GpuFuture, GpuFutureError> {
+    pub fn create_gpu_future(&self) -> Result<GpuFuture, GpuFutureError> {
         let semaphore = unsafe {
             self
                 .device

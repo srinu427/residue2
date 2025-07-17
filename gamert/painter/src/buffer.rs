@@ -57,7 +57,7 @@ impl Drop for Buffer {
 }
 
 impl Painter {
-    pub fn new_buffer(
+    pub fn create_buffer(
         &self,
         size: u64,
         buffer_usage_flags: vk::BufferUsageFlags,
