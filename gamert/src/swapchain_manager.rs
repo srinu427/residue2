@@ -11,12 +11,9 @@ pub enum SwapchainManagerError {
     FetchImages(vk::Result),
     #[error("Error creating Image view for swapchain image: {0}")]
     CreateImageViewError(vk::Result),
-    #[error("Error beginning recording of CommandBuffer: {0}")]
-    CommandBufferBeginError(vk::Result)
 }
 
 pub struct SwapchainManager {
-    pub image_layout_init_fence: vk::Fence,
     pub image_views: Vec<vk::ImageView>,
     pub images: Vec<vk::Image>,
     pub present_mode: vk::PresentModeKHR,
@@ -67,6 +64,80 @@ impl SwapchainManager {
         }
 
         Ok(())
+    }
+
+    pub fn new(
+        device: &ash::Device,
+        surface_instance: khr::surface::Instance,
+        gpu: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        swapchain_device: khr::swapchain::Device,
+        present_mode: vk::PresentModeKHR,
+        surface_format: vk::SurfaceFormatKHR,
+    ) -> Result<Self, SwapchainManagerError> {
+        unsafe {
+            let surface_caps = surface_instance
+                .get_physical_device_surface_capabilities(gpu, surface)
+                .map_err(SwapchainManagerError::SurfaceCapsQueryError)?;
+
+            let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+                .surface(surface)
+                .min_image_count(surface_caps.min_image_count)
+                .image_format(surface_format.format)
+                .image_color_space(surface_format.color_space)
+                .image_extent(surface_caps.current_extent)
+                .image_array_layers(1)
+                .image_usage(
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT
+                        | vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::STORAGE,
+                )
+                .pre_transform(surface_caps.current_transform)
+                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                .present_mode(present_mode)
+                .clipped(true);
+
+            let swapchain = swapchain_device
+                .create_swapchain(&swapchain_create_info, None)
+                .map_err(SwapchainManagerError::CreateError)?;
+
+            let images = swapchain_device
+                .get_swapchain_images(swapchain)
+                .map_err(SwapchainManagerError::FetchImages)?;
+
+            let image_views = images
+                .iter()
+                .map(|&image| {
+                    let image_view_create_info = vk::ImageViewCreateInfo::default()
+                        .image(image)
+                        .format(surface_format.format)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .subresource_range(
+                            vk::ImageSubresourceRange::default()
+                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                .layer_count(1)
+                                .level_count(1)
+                                .base_array_layer(0)
+                                .base_mip_level(0),
+                        );
+                    device
+                        .create_image_view(&image_view_create_info, None)
+                        .map_err(SwapchainManagerError::CreateImageViewError)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Self {
+                    image_views,
+                    images,
+                    present_mode,
+                    surface_format,
+                    surface_resolution: surface_caps.current_extent,
+                    surface,
+                    gpu,
+                    swapchain,
+                    swapchain_device,
+                })
+        }
     }
 
     pub fn refresh_resolution(
