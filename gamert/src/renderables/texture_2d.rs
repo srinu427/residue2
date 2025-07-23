@@ -1,5 +1,5 @@
-use painter::gpu_allocator::vulkan::{Allocation, Allocator};
-use painter::ash::{self, vk};
+use gpu_allocator::vulkan::{Allocation, Allocator};
+use ash::vk;
 
 pub struct Texture2D {
     image: vk::Image,

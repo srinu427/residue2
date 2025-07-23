@@ -1,6 +1,6 @@
 use std::mem::offset_of;
 
-use painter::ash::vk;
+use ash::vk;
 
 #[derive(Debug, Clone)]
 pub struct Vertex {

@@ -1,4 +1,4 @@
-use painter::ash::{self, khr, vk};
+use ash::{khr, vk};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1,23 +1,14 @@
 use std::sync::Arc;
 
-use painter::winit::application::ApplicationHandler;
-use painter::winit::event::WindowEvent;
-use painter::winit::event_loop::{self, ControlFlow, EventLoop};
-use painter::winit::window::{Window, WindowAttributes};
-use painter::{
-    CommandBuffer, CommandPool, CpuFuture, GpuCommand, GpuFuture, ImageAccess, Painter, Sheets,
-};
-
-mod mesh_painter;
 mod renderables;
 mod renderers;
 mod scene_elements;
 mod swapchain_manager;
 
-use mesh_painter::DrawableMeshAndTexture;
-use mesh_painter::MeshPainter;
-
+use ash::vk;
 use renderables::mesh::Vertex;
+
+use crate::swapchain_manager::SwapchainManager;
 
 fn square_verts() -> Vec<Vertex> {
     vec![
@@ -50,15 +41,15 @@ fn square_indices() -> Vec<u32> {
 
 pub struct Canvas {
     painter: Arc<Painter>,
-    sheets: Sheets,
+    swapchain_manager: SwapchainManager,
     mesh_painter: MeshPainter,
     drawables: Vec<DrawableMeshAndTexture>,
     command_pool: CommandPool,
     command_buffers: Vec<CommandBuffer>,
-    draw_complete_gpu_futs: Vec<GpuFuture>,
-    draw_complete_cpu_futs: Vec<CpuFuture>,
+    draw_complete_semaphores: Vec<vk::Semaphore>,
+    draw_complete_fences: Vec<vk::Fence>,
     upload_command_buffer: CommandBuffer,
-    acquire_image_cpu_fut: CpuFuture,
+    acquire_image_fence: vk::Fence,
 }
 
 impl Canvas {
@@ -224,7 +215,7 @@ impl Game {
 }
 
 impl ApplicationHandler for Game {
-    fn resumed(&mut self, event_loop: &painter::winit::event_loop::ActiveEventLoop) {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.canvas.is_some() {
             return;
         }
@@ -243,8 +234,8 @@ impl ApplicationHandler for Game {
 
     fn window_event(
         &mut self,
-        event_loop: &painter::winit::event_loop::ActiveEventLoop,
-        _window_id: painter::winit::window::WindowId,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
         match event {
