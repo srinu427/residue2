@@ -2,11 +2,7 @@
 #extension GL_EXT_debug_printf : enable
 // #extension GL_KHR_vulkan_glsl: enable
 
-struct ObjectData {
-  mat4 transform;
-};
-
-struct CamData {
+struct Camera {
   vec4 pos;
   vec4 look_at;
   mat4 view_proj_mat;
@@ -18,8 +14,13 @@ struct PointLight{
   vec4 props;
 };
 
-struct SceneData {
-  CamData cam_data;
-  // uvec4 counts;
-  // PointLight point_lights[32];
+struct ObjectInfo {
+  uint sampler_id;
+  uint tex_id;
+};
+
+struct GpuVertex {
+  float pos[3];
+  float uv[2];
+  uint obj_id;
 };

@@ -144,8 +144,6 @@ impl SwapchainManager {
         &mut self,
         device: &ash::Device,
         surface_instance: khr::surface::Instance,
-        queue: vk::Queue,
-        command_buffer: vk::CommandBuffer,
     ) -> Result<(), SwapchainManagerError> {
         unsafe {
             let surface_caps = surface_instance

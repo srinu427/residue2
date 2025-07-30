@@ -7,6 +7,7 @@ mod swapchain_manager;
 
 use ash::vk;
 use renderables::mesh::Vertex;
+use winit::{application::ApplicationHandler, event::WindowEvent, event_loop, window::{Window, WindowAttributes}};
 
 use crate::swapchain_manager::SwapchainManager;
 
@@ -325,8 +326,8 @@ impl ApplicationHandler for Game {
     }
 }
 
-pub fn start_window_event_loop() -> Result<EventLoop<()>, String> {
-    let window_event_loop = EventLoop::new().map_err(|e| format!("at EventLoop::new: {e}"))?;
-    window_event_loop.set_control_flow(ControlFlow::Poll);
+pub fn start_window_event_loop() -> Result<event_loop::EventLoop<()>, String> {
+    let window_event_loop = event_loop::EventLoop::new().map_err(|e| format!("at EventLoop::new: {e}"))?;
+    window_event_loop.set_control_flow(event_loop::ControlFlow::Poll);
     Ok(window_event_loop)
 }

@@ -1,5 +1,5 @@
 fn main() {
-    println!("cargo::rerun-if-changed=src/shaders");
+    println!("cargo::rerun-if-changed=src/renderers/shaders");
 
     // // Print that the build script is running
     // println!("cargo::warning=Build script is running...");
@@ -24,9 +24,9 @@ fn main() {
 
     // Compile vertex shader
     let vert_result = std::process::Command::new("glslc")
-        .arg("src/shaders/mesh_painter.vert")
+        .arg("src/renderers/shaders/mesh_painter.vert")
         .arg("-o")
-        .arg("src/shaders/mesh_painter.vert.spv")
+        .arg("src/renderers/shaders/mesh_painter.vert.spv")
         .output();
 
     match vert_result {
@@ -48,9 +48,9 @@ fn main() {
 
     // Compile fragment shader
     let frag_result = std::process::Command::new("glslc")
-        .arg("src/shaders/mesh_painter.frag")
+        .arg("src/renderers/shaders/mesh_painter.frag")
         .arg("-o")
-        .arg("src/shaders/mesh_painter.frag.spv")
+        .arg("src/renderers/shaders/mesh_painter.frag.spv")
         .output();
 
     match frag_result {
